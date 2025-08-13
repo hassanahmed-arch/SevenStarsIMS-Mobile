@@ -1,7 +1,6 @@
 # Welcome to SevenStarsIMS! 🌟
 
-<img src="SevenStarsIMS/assets/images
-/logo.png" width="200">
+<img src="SevenStarsIMS/assets/images/logo.png" width="200">
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 
