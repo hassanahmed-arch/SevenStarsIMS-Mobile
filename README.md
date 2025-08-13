@@ -10,3 +10,4 @@ Fun Features:
 - 🚀 Lightning speed
 
 ![Demo GIF](images/demo-fun.gif)
+
