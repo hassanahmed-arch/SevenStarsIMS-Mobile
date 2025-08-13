@@ -126,7 +126,7 @@ const LoginScreen: React.FC = () => {
               <View style={styles.underline} />
             </View>
 
-            <Text style={styles.welcomeText}>Welcome Back</Text>
+            <Text style={styles.welcomeText}>Welcome</Text>
             <Text style={styles.instructionText}>
               Fill out the information below in order to access your account.
             </Text>
