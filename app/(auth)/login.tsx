@@ -1,6 +1,10 @@
+// app/(auth)/login.tsx
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
+    ActivityIndicator,
+    Alert,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -13,6 +17,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { supabase } from '../../src/lib/supabase';
 
 const LoginScreen: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -20,15 +25,78 @@ const LoginScreen: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSignIn = () => {
-    // Add your sign in logic here
-    console.log('Sign in with:', { email, password });
+  const handleSignIn = async () => {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password: password,
+      });
+
+      if (error) throw error;
+
+      // Fetch user role
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', data.user.id)
+        .single();
+
+      if (profileError) {
+        // If profile doesn't exist, create it with default role
+        await supabase.from('profiles').insert({
+          id: data.user.id,
+          email: data.user.email,
+          role: 'sales_agent'
+        });
+        router.replace('/(sales)' as any);
+      } else {
+        // Navigate based on role
+        switch (profile.role) {
+          case 'admin':
+            router.replace('/(admin)' as any);
+            break;
+          case 'warehouse_operator':
+            router.replace('/(warehouse)' as any);
+            break;
+          case 'sales_agent':
+          default:
+            router.replace('/(sales)' as any);
+            break;
+        }
+      }
+    } catch (error: any) {
+      Alert.alert('Login Failed', error.message || 'An error occurred during login');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleForgotPassword = () => {
-    // Add your forgot password logic here
-    console.log('Forgot password pressed');
+  const handleForgotPassword = async () => {
+    if (!email) {
+      Alert.alert('Email Required', 'Please enter your email address first');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase());
+      
+      if (error) throw error;
+      
+      Alert.alert(
+        'Password Reset Email Sent', 
+        'Please check your email for password reset instructions'
+      );
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to send password reset email');
+    }
   };
 
   return (
@@ -113,11 +181,16 @@ const LoginScreen: React.FC = () => {
 
             {/* Sign In Button */}
             <TouchableOpacity 
-              style={styles.signInButton}
+              style={[styles.signInButton, isLoading && styles.signInButtonDisabled]}
               onPress={handleSignIn}
               activeOpacity={0.8}
+              disabled={isLoading}
             >
-              <Text style={styles.signInButtonText}>Sign In</Text>
+              {isLoading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.signInButtonText}>Sign In</Text>
+              )}
             </TouchableOpacity>
 
             {/* Forgot Password Link */}
@@ -173,7 +246,7 @@ const styles = StyleSheet.create({
   underline: {
     width: 60,
     height: 3,
-    backgroundColor: '#e9220cff',
+    backgroundColor: '#E74C3C',
     borderRadius: 2,
   },
   welcomeText: {
@@ -210,7 +283,7 @@ const styles = StyleSheet.create({
     color: '#000000',
   },
   inputFocused: {
-    borderColor: '#e9220cff',
+    borderColor: '#E74C3C',
     borderWidth: 1.5,
   },
   passwordInputContainer: {
@@ -234,13 +307,13 @@ const styles = StyleSheet.create({
   },
   signInButton: {
     height: 50,
-    backgroundColor: '#e9220cff',
+    backgroundColor: '#E74C3C',
     borderRadius: 25,
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 10,
     marginBottom: 25,
-    shadowColor: '#e9220cff',
+    shadowColor: '#E74C3C',
     shadowOffset: {
       width: 0,
       height: 4,
@@ -248,6 +321,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
+  },
+  signInButtonDisabled: {
+    opacity: 0.7,
   },
   signInButtonText: {
     color: '#FFFFFF',
@@ -263,6 +339,6 @@ const styles = StyleSheet.create({
     color: '#666666',
     textDecorationLine: 'underline',
   },
-})
+});
 
 export default LoginScreen;
