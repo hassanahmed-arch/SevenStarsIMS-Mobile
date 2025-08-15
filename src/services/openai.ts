@@ -1,13 +1,12 @@
 // src/services/openai.ts
-import OpenAI from 'openai';
 import { supabase } from '../lib/supabase';
 
 // Store this in environment variables in production
-const OPENAI_API_KEY = 'XXXXXX';
+//const OPENAI_API_KEY = '';
 
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+//const openai = new OpenAI({
+//  apiKey: OPENAI_API_KEY,
+//});
 
 export interface ParsedOrderItem {
   product_name: string;
