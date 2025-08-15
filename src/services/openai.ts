@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { supabase } from '../lib/supabase';
 
 // Store this in environment variables in production
-const OPENAI_API_KEY = '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';
+const OPENAI_API_KEY = 'XXXXXX';
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
