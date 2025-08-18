@@ -1,9 +1,14 @@
+//this file is the layout of the entire app in the sense that it sets up the 
+//navigation structure. so it is responsible for defining the screens and their 
+//navigation options.
+
+
 // app/_layout.tsx
-import React, { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
 import { Session } from '@supabase/supabase-js';
+import { Stack } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import { supabase } from '../src/lib/supabase';
-import { View, ActivityIndicator } from 'react-native';
 
 export type UserRole = 'admin' | 'sales_agent' | 'warehouse_operator';
 

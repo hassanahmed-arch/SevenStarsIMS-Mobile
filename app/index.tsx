@@ -1,3 +1,7 @@
+//here app index.tsx is the entry point of the app, 
+//which checks user authentication and redirects based on user roles.
+//so you can think of it as a router that sends users to the appropriate screen
+
 // app/index.tsx
 import { router } from 'expo-router';
 import { useEffect } from 'react';
@@ -11,7 +15,7 @@ export default function Index() {
 
   const checkAuth = async () => {
     const { data: { session } } = await supabase.auth.getSession();
-    
+
     if (!session) {
       router.replace('/(auth)/login' as any);
       return;
