@@ -1,18 +1,22 @@
+//the logic of this file is to handle the addition of new products to the inventory
+//it includes a form for entering product details, validation, and submission to the database
+
+
 // app/(admin)/add-product.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { supabase } from '../../src/lib/supabase';
 
@@ -82,14 +86,14 @@ export default function AddProduct() {
         <View style={{ width: 24 }} />
       </View>
 
-      <KeyboardAvoidingView 
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
         <ScrollView style={styles.form} showsVerticalScrollIndicator={false}>
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Product Information</Text>
-            
+
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>
                 Product ID <Text style={styles.required}>*</Text>
@@ -97,7 +101,7 @@ export default function AddProduct() {
               <TextInput
                 style={styles.input}
                 value={product.product_id}
-                onChangeText={(text) => setProduct({...product, product_id: text})}
+                onChangeText={(text) => setProduct({ ...product, product_id: text })}
                 placeholder="e.g., PRODUCT-001"
                 placeholderTextColor="#999"
                 autoCapitalize="characters"
@@ -111,7 +115,7 @@ export default function AddProduct() {
               <TextInput
                 style={styles.input}
                 value={product.product_name}
-                onChangeText={(text) => setProduct({...product, product_name: text})}
+                onChangeText={(text) => setProduct({ ...product, product_name: text })}
                 placeholder="Enter product name"
                 placeholderTextColor="#999"
               />
@@ -123,7 +127,7 @@ export default function AddProduct() {
                 <TextInput
                   style={[styles.input, styles.barcodeInput]}
                   value={product.barcode}
-                  onChangeText={(text) => setProduct({...product, barcode: text})}
+                  onChangeText={(text) => setProduct({ ...product, barcode: text })}
                   placeholder="Enter or scan barcode"
                   placeholderTextColor="#999"
                   keyboardType="numeric"
@@ -139,7 +143,7 @@ export default function AddProduct() {
               <TextInput
                 style={styles.input}
                 value={product.sku}
-                onChangeText={(text) => setProduct({...product, sku: text})}
+                onChangeText={(text) => setProduct({ ...product, sku: text })}
                 placeholder="Stock Keeping Unit (optional)"
                 placeholderTextColor="#999"
               />
@@ -156,7 +160,7 @@ export default function AddProduct() {
                         styles.categoryButton,
                         product.category === cat && styles.categoryButtonActive
                       ]}
-                      onPress={() => setProduct({...product, category: cat})}
+                      onPress={() => setProduct({ ...product, category: cat })}
                     >
                       <Text style={[
                         styles.categoryButtonText,
@@ -173,7 +177,7 @@ export default function AddProduct() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Stock Information</Text>
-            
+
             <View style={styles.row}>
               <View style={[styles.inputGroup, { flex: 1, marginRight: 10 }]}>
                 <Text style={styles.inputLabel}>
@@ -182,7 +186,7 @@ export default function AddProduct() {
                 <TextInput
                   style={styles.input}
                   value={product.quantity}
-                  onChangeText={(text) => setProduct({...product, quantity: text})}
+                  onChangeText={(text) => setProduct({ ...product, quantity: text })}
                   placeholder="0"
                   placeholderTextColor="#999"
                   keyboardType="numeric"
@@ -200,7 +204,7 @@ export default function AddProduct() {
                           styles.unitButton,
                           product.unit === u && styles.unitButtonActive
                         ]}
-                        onPress={() => setProduct({...product, unit: u})}
+                        onPress={() => setProduct({ ...product, unit: u })}
                       >
                         <Text style={[
                           styles.unitButtonText,
@@ -221,7 +225,7 @@ export default function AddProduct() {
                 <TextInput
                   style={styles.input}
                   value={product.min_stock_level}
-                  onChangeText={(text) => setProduct({...product, min_stock_level: text})}
+                  onChangeText={(text) => setProduct({ ...product, min_stock_level: text })}
                   placeholder="10"
                   placeholderTextColor="#999"
                   keyboardType="numeric"
@@ -233,7 +237,7 @@ export default function AddProduct() {
                 <TextInput
                   style={styles.input}
                   value={product.max_stock_level}
-                  onChangeText={(text) => setProduct({...product, max_stock_level: text})}
+                  onChangeText={(text) => setProduct({ ...product, max_stock_level: text })}
                   placeholder="100"
                   placeholderTextColor="#999"
                   keyboardType="numeric"
@@ -244,7 +248,7 @@ export default function AddProduct() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Pricing</Text>
-            
+
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>
                 Price ($) <Text style={styles.required}>*</Text>
@@ -252,7 +256,7 @@ export default function AddProduct() {
               <TextInput
                 style={styles.input}
                 value={product.price}
-                onChangeText={(text) => setProduct({...product, price: text})}
+                onChangeText={(text) => setProduct({ ...product, price: text })}
                 placeholder="0.00"
                 placeholderTextColor="#999"
                 keyboardType="decimal-pad"
@@ -262,13 +266,13 @@ export default function AddProduct() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Additional Information</Text>
-            
+
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Description</Text>
               <TextInput
                 style={[styles.input, styles.textArea]}
                 value={product.description}
-                onChangeText={(text) => setProduct({...product, description: text})}
+                onChangeText={(text) => setProduct({ ...product, description: text })}
                 placeholder="Enter product description (optional)"
                 placeholderTextColor="#999"
                 multiline
@@ -279,14 +283,14 @@ export default function AddProduct() {
           </View>
 
           <View style={styles.buttonContainer}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.cancelButton}
               onPress={() => router.back()}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={[styles.addButton, isSubmitting && styles.addButtonDisabled]}
               onPress={handleAddProduct}
               disabled={isSubmitting}

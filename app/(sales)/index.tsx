@@ -1,3 +1,15 @@
+//what happens on this file is that:
+//1. we get the sales agent info 
+//2. we fetch customers from database for dropdown
+//3.we make sure that all the fields are filled before placing an order
+//4. we have all the UI of the sales agent screen here
+//5. here is use AI to matchh the order to inventory and calculate the total of the order
+//6. to use the AI we extract the quantity and product name and price and clean up the text
+//7. we match the order to inventory using the product name and quantity
+//8. we save the order to the database
+
+
+
 // app/(sales)/index.tsx - Updated with improved date and time pickers
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -17,7 +29,6 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import ManualOrderEntry from '../../src/components/sales/ManualOrderEntry';
 import OrderProcessor from '../../src/components/sales/OrderProcessor';
 import { supabase } from '../../src/lib/supabase';
 
@@ -50,15 +61,14 @@ export default function SalesAgentDashboard() {
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [showManualEntry, setShowManualEntry] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  
+
   // New state for calendar view
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [selectedHour, setSelectedHour] = useState(12);
   const [selectedMinute, setSelectedMinute] = useState(0);
   const [selectedPeriod, setSelectedPeriod] = useState<'AM' | 'PM'>('PM');
-  
+
   const [orderForm, setOrderForm] = useState<OrderForm>({
     naturalLanguageOrder: '',
     customerId: '',
@@ -88,7 +98,7 @@ export default function SalesAgentDashboard() {
         .select('full_name')
         .eq('id', user.id)
         .single();
-      
+
       if (profile?.full_name) {
         setUserName(profile.full_name);
       } else {
@@ -170,12 +180,12 @@ export default function SalesAgentDashboard() {
 
   const selectCustomer = (customer: Customer) => {
     setSelectedCustomer(customer);
-    setOrderForm({...orderForm, customerId: customer.id});
+    setOrderForm({ ...orderForm, customerId: customer.id });
     setShowCustomerModal(false);
   };
 
   const selectPaymentType = (type: string) => {
-    setOrderForm({...orderForm, paymentType: type});
+    setOrderForm({ ...orderForm, paymentType: type });
     setShowPaymentModal(false);
   };
 
@@ -210,9 +220,9 @@ export default function SalesAgentDashboard() {
         date,
         disabled: isPast,
         isToday: date.getTime() === today.getTime(),
-        isSelected: orderForm.deliveryDate && 
-          date.getTime() === new Date(orderForm.deliveryDate.getFullYear(), 
-            orderForm.deliveryDate.getMonth(), 
+        isSelected: orderForm.deliveryDate &&
+          date.getTime() === new Date(orderForm.deliveryDate.getFullYear(),
+            orderForm.deliveryDate.getMonth(),
             orderForm.deliveryDate.getDate()).getTime()
       });
     }
@@ -221,22 +231,22 @@ export default function SalesAgentDashboard() {
   };
 
   const handleDateSelection = (date: Date) => {
-    setOrderForm({...orderForm, deliveryDate: date});
+    setOrderForm({ ...orderForm, deliveryDate: date });
     setShowDateModal(false);
   };
 
   const handleTimeConfirm = () => {
     const newTime = new Date();
     let hours = selectedHour;
-    
+
     if (selectedPeriod === 'PM' && hours !== 12) {
       hours += 12;
     } else if (selectedPeriod === 'AM' && hours === 12) {
       hours = 0;
     }
-    
+
     newTime.setHours(hours, selectedMinute, 0, 0);
-    setOrderForm({...orderForm, deliveryTime: newTime});
+    setOrderForm({ ...orderForm, deliveryTime: newTime });
     setShowTimeModal(false);
   };
 
@@ -251,7 +261,7 @@ export default function SalesAgentDashboard() {
     const currentTime = orderForm.deliveryTime;
     const hours = currentTime.getHours();
     const minutes = currentTime.getMinutes();
-    
+
     setSelectedPeriod(hours >= 12 ? 'PM' : 'AM');
     setSelectedHour(hours === 0 ? 12 : hours > 12 ? hours - 12 : hours);
     setSelectedMinute(Math.round(minutes / 15) * 15); // Round to nearest 15
@@ -264,8 +274,8 @@ export default function SalesAgentDashboard() {
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <View style={styles.welcomeContainer}>
-            <Text style={styles.welcomeText}>Welcome,</Text>
-            <Text style={styles.userName}>{userName}</Text>
+            <Text style={styles.welcomeText}>Place Order</Text>
+            <Text style={styles.userName}>{userName.charAt(0).toUpperCase() + userName.slice(1).toLowerCase()}</Text>
             <Text style={styles.roleText}>Sales Agent</Text>
           </View>
           <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
@@ -274,157 +284,123 @@ export default function SalesAgentDashboard() {
         </View>
       </View>
 
-      <KeyboardAvoidingView 
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.content}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
-          {/* Order Entry Tabs */}
-          <View style={styles.tabContainer}>
-            <TouchableOpacity 
-              style={[styles.tab, !showManualEntry && styles.activeTab]}
-              onPress={() => setShowManualEntry(false)}
-            >
-              <Ionicons name="sparkles" size={16} color={!showManualEntry ? '#E74C3C' : '#999'} />
-              <Text style={[styles.tabText, !showManualEntry && styles.activeTabText]}>AI Processing</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.tab, showManualEntry && styles.activeTab]}
-              onPress={() => setShowManualEntry(true)}
-            >
-              <Ionicons name="create-outline" size={16} color={showManualEntry ? '#E74C3C' : '#999'} />
-              <Text style={[styles.tabText, showManualEntry && styles.activeTabText]}>Manual Entry</Text>
-            </TouchableOpacity>
-          </View>
-
-          {!showManualEntry ? (
-            // AI Order Processing Form
-            <View style={styles.formCard}>
-              {/* Order Details */}
-              <View style={styles.formSection}>
-                <Text style={styles.sectionTitle}>Order Details</Text>
-                <Text style={styles.helperText}>
-                  Enter your order in natural language. For example: "10 cases of watermelon fakher, 5 boxes of coconut coals, 2 packs of mint tobacco"
-                </Text>
-                <TextInput
-                  style={styles.textArea}
-                  placeholder='e.g., "10 cases of watermelon fakher, 5 boxes of coconut coals at $8 each, 2 packs of mint tobacco"'
-                  placeholderTextColor="#999"
-                  multiline
-                  numberOfLines={4}
-                  value={orderForm.naturalLanguageOrder}
-                  onChangeText={(text) => setOrderForm({...orderForm, naturalLanguageOrder: text})}
-                  textAlignVertical="top"
-                />
-              </View>
-
-              {/* Customer and Agent Selection */}
-              <View style={styles.formRow}>
-                <View style={[styles.formGroup, { flex: 1, marginRight: 10 }]}>
-                  <Text style={styles.label}>
-                    Sales Agent <Text style={styles.required}>*</Text>
-                  </Text>
-                  <View style={styles.readOnlyInput}>
-                    <Text style={styles.readOnlyText}>{userName}</Text>
-                  </View>
-                </View>
-
-                <View style={[styles.formGroup, { flex: 1 }]}>
-                  <Text style={styles.label}>
-                    Customer <Text style={styles.required}>*</Text>
-                  </Text>
-                  <TouchableOpacity 
-                    style={styles.selectButton}
-                    onPress={() => setShowCustomerModal(true)}
-                  >
-                    <Text style={[styles.selectButtonText, !selectedCustomer && styles.placeholderText]}>
-                      {selectedCustomer ? selectedCustomer.name : 'Select customer'}
-                    </Text>
-                    <Ionicons name="chevron-down" size={20} color="#666" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Delivery Date and Time */}
-              <View style={styles.formRow}>
-                <View style={[styles.formGroup, { flex: 1, marginRight: 10 }]}>
-                  <Text style={styles.label}>
-                    Delivery Date <Text style={styles.required}>*</Text>
-                  </Text>
-                  <TouchableOpacity 
-                    style={styles.dateTimeButton}
-                    onPress={() => setShowDateModal(true)}
-                  >
-                    <Ionicons name="calendar-outline" size={20} color="#666" />
-                    <Text style={styles.dateTimeText}>{formatDate(orderForm.deliveryDate)}</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={[styles.formGroup, { flex: 1 }]}>
-                  <Text style={styles.label}>
-                    Delivery Time <Text style={styles.required}>*</Text>
-                  </Text>
-                  <TouchableOpacity 
-                    style={styles.dateTimeButton}
-                    onPress={openTimePicker}
-                  >
-                    <Ionicons name="time-outline" size={20} color="#666" />
-                    <Text style={styles.dateTimeText}>{formatTime(orderForm.deliveryTime)}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Payment Type */}
-              <View style={styles.formGroup}>
+          {/* Create Order Form */}
+          <View style={styles.formCard}>
+            {/* Customer and Agent Selection */}
+            <View style={styles.formRow}>
+              <View style={[styles.formGroup, { flex: 1, marginRight: 10 }]}>
                 <Text style={styles.label}>
-                  Payment Type <Text style={styles.required}>*</Text>
+                  Sales Agent <Text style={styles.required}>*</Text>
                 </Text>
-                <TouchableOpacity 
+                <View style={styles.readOnlyInput}>
+                  <Text style={styles.readOnlyText}>{userName}</Text>
+                </View>
+              </View>
+
+              <View style={[styles.formGroup, { flex: 1 }]}>
+                <Text style={styles.label}>
+                  Customer <Text style={styles.required}>*</Text>
+                </Text>
+                <TouchableOpacity
                   style={styles.selectButton}
-                  onPress={() => setShowPaymentModal(true)}
+                  onPress={() => setShowCustomerModal(true)}
                 >
-                  <Text style={styles.selectButtonText}>
-                    {paymentTypes.find(p => p.value === orderForm.paymentType)?.label || 'Select payment'}
+                  <Text style={[styles.selectButtonText, !selectedCustomer && styles.placeholderText]}>
+                    {selectedCustomer ? selectedCustomer.name : 'Select customer'}
                   </Text>
                   <Ionicons name="chevron-down" size={20} color="#666" />
                 </TouchableOpacity>
               </View>
+            </View>
 
-              {/* Process Button */}
-              <TouchableOpacity 
-                style={[styles.processButton, isLoading && styles.processButtonDisabled]}
-                onPress={handleProcessOrder}
-                disabled={isLoading}
+            {/* Delivery Date and Time */}
+            <View style={styles.formRow}>
+              <View style={[styles.formGroup, { flex: 1, marginRight: 10 }]}>
+                <Text style={styles.label}>
+                  Delivery Date <Text style={styles.required}>*</Text>
+                </Text>
+                <TouchableOpacity
+                  style={styles.dateTimeButton}
+                  onPress={() => setShowDateModal(true)}
+                >
+                  <Ionicons name="calendar-outline" size={20} color="#666" />
+                  <Text style={styles.dateTimeText}>{formatDate(orderForm.deliveryDate)}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.formGroup, { flex: 1 }]}>
+                <Text style={styles.label}>
+                  Delivery Time <Text style={styles.required}>*</Text>
+                </Text>
+                <TouchableOpacity
+                  style={styles.dateTimeButton}
+                  onPress={openTimePicker}
+                >
+                  <Ionicons name="time-outline" size={20} color="#666" />
+                  <Text style={styles.dateTimeText}>{formatTime(orderForm.deliveryTime)}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Payment Type */}
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>
+                Payment Type <Text style={styles.required}>*</Text>
+              </Text>
+              <TouchableOpacity
+                style={styles.selectButton}
+                onPress={() => setShowPaymentModal(true)}
               >
-                {isLoading ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <>
-                    <Ionicons name="sparkles" size={20} color="#FFFFFF" />
-                    <Text style={styles.processButtonText}>Process Order with AI</Text>
-                  </>
-                )}
+                <Text style={styles.selectButtonText}>
+                  {paymentTypes.find(p => p.value === orderForm.paymentType)?.label || 'Select payment'}
+                </Text>
+                <Ionicons name="chevron-down" size={20} color="#666" />
               </TouchableOpacity>
             </View>
-          ) : (
-            // Manual Order Entry
-            <ManualOrderEntry
-              customerId={orderForm.customerId}
-              selectedCustomer={selectedCustomer}
-              deliveryDate={orderForm.deliveryDate}
-              deliveryTime={orderForm.deliveryTime}
-              paymentType={orderForm.paymentType}
-              salesAgentId={userId}
-              onSelectCustomer={() => setShowCustomerModal(true)}
-              onSelectPaymentType={() => setShowPaymentModal(true)}
-              onSelectDate={() => setShowDateModal(true)}
-              onSelectTime={openTimePicker}
-            />
-          )}
+
+            {/* Order Details */}
+            <View style={styles.formSection}>
+              <Text style={styles.sectionTitle}>Order Details (Natural Language) <Text style={styles.required}>*</Text></Text>
+              <Text style={styles.helperText}>
+                Describe your order in natural language. Our AI will match products to your inventory and suggest pricing.
+              </Text>
+              <TextInput
+                style={styles.textArea}
+                placeholder='e.g., "10 cases of watermelon adalya $250, watermelon adalya"'
+                placeholderTextColor="#999"
+                multiline
+                numberOfLines={6}
+                value={orderForm.naturalLanguageOrder}
+                onChangeText={(text) => setOrderForm({ ...orderForm, naturalLanguageOrder: text })}
+                textAlignVertical="top"
+              />
+            </View>
+
+            {/* Process Button */}
+            <TouchableOpacity
+              style={[styles.processButton, isLoading && styles.processButtonDisabled]}
+              onPress={handleProcessOrder}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="receipt-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.processButtonText}>Process Order</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -447,7 +423,7 @@ export default function SalesAgentDashboard() {
               data={customers}
               keyExtractor={(item) => item.id}
               renderItem={({ item }) => (
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.customerItem}
                   onPress={() => selectCustomer(item)}
                 >
@@ -512,17 +488,17 @@ export default function SalesAgentDashboard() {
                 <Ionicons name="close" size={24} color="#333" />
               </TouchableOpacity>
             </View>
-            
+
             {/* Quick Select Options */}
             <View style={styles.quickDateOptions}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.quickDateChip}
                   onPress={() => handleDateSelection(new Date())}
                 >
                   <Text style={styles.quickDateChipText}>Today</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.quickDateChip}
                   onPress={() => {
                     const tomorrow = new Date();
@@ -532,7 +508,7 @@ export default function SalesAgentDashboard() {
                 >
                   <Text style={styles.quickDateChipText}>Tomorrow</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.quickDateChip}
                   onPress={() => {
                     const nextWeek = new Date();
@@ -795,9 +771,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   welcomeText: {
-    fontSize: 16,
+    fontSize: 20,
     color: '#FFFFFF',
-    opacity: 0.9,
+    fontWeight: '600',
+    opacity: 0.95,
   },
   userName: {
     fontSize: 28,
@@ -824,34 +801,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 15,
     paddingBottom: 30,
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginBottom: 15,
-    padding: 4,
-  },
-  tab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  activeTab: {
-    backgroundColor: '#FFF0F0',
-  },
-  tabText: {
-    fontSize: 14,
-    color: '#999',
-    marginLeft: 6,
-    fontWeight: '500',
-  },
-  activeTabText: {
-    color: '#E74C3C',
-    fontWeight: '600',
   },
   formCard: {
     backgroundColor: '#FFFFFF',
@@ -883,10 +832,11 @@ const styles = StyleSheet.create({
     borderColor: '#E0E0E0',
     borderRadius: 10,
     padding: 15,
-    fontSize: 15,
+    fontSize: 16,
     color: '#333',
     backgroundColor: '#FAFAFA',
-    minHeight: 100,
+    minHeight: 150,
+    maxHeight: 200,
     textAlignVertical: 'top',
   },
   formRow: {
@@ -1020,7 +970,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#333',
   },
-  
+
   // New Calendar Styles
   quickDateOptions: {
     paddingHorizontal: 20,

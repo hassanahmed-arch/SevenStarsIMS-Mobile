@@ -1,21 +1,25 @@
+//here is the handling of logining in the user to the app and 
+//redirecting them to their assigned screen if login is successful. also the styling of 
+//the login screen is done here.
+
 // app/(auth)/login.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { supabase } from '../../src/lib/supabase';
 
@@ -87,11 +91,11 @@ const LoginScreen: React.FC = () => {
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase());
-      
+
       if (error) throw error;
-      
+
       Alert.alert(
-        'Password Reset Email Sent', 
+        'Password Reset Email Sent',
         'Please check your email for password reset instructions'
       );
     } catch (error: any) {
@@ -101,18 +105,18 @@ const LoginScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView 
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardAvoidingView}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
           {/* Logo Section */}
           <View style={styles.logoContainer}>
-            <Image 
+            <Image
               source={require('../../assets/images/logo.png')}
               style={styles.logo}
               resizeMode="contain"
@@ -170,9 +174,9 @@ const LoginScreen: React.FC = () => {
                   style={styles.eyeIcon}
                   onPress={() => setShowPassword(!showPassword)}
                 >
-                  <Ionicons 
-                    name={showPassword ? "eye-outline" : "eye-off-outline"} 
-                    size={20} 
+                  <Ionicons
+                    name={showPassword ? "eye-outline" : "eye-off-outline"}
+                    size={20}
                     color="#999"
                   />
                 </Pressable>
@@ -180,7 +184,7 @@ const LoginScreen: React.FC = () => {
             </View>
 
             {/* Sign In Button */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.signInButton, isLoading && styles.signInButtonDisabled]}
               onPress={handleSignIn}
               activeOpacity={0.8}
@@ -194,7 +198,7 @@ const LoginScreen: React.FC = () => {
             </TouchableOpacity>
 
             {/* Forgot Password Link */}
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={handleForgotPassword}
               style={styles.forgotPasswordContainer}
             >

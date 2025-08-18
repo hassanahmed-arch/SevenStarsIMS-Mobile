@@ -1,23 +1,33 @@
+// Real-time Statistics: Total products, low stock alerts, inventory value
+// Advanced Search: By name, SKU, or barcode
+// Filtering: All products, low stock, out of stock, in stock
+// Product Management: View, edit, delete products
+// Stock Monitoring: Visual indicators for stock levels
+
+
+
+
+
 // app/(admin)/index.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { debounce } from 'lodash';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    RefreshControl,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { supabase } from '../../src/lib/supabase';
 
@@ -56,17 +66,17 @@ export default function AdminDashboard() {
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editedProduct, setEditedProduct] = useState<Product | null>(null);
   const [userName, setUserName] = useState('');
-  
+
   // Pagination states
   const [currentPage, setCurrentPage] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  
+
   // Filter states
   const [stockFilter, setStockFilter] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-  
+
   // Stats
   const [stats, setStats] = useState<SearchStats>({
     totalProducts: 0,
@@ -144,7 +154,7 @@ export default function AdminDashboard() {
         .select('full_name')
         .eq('id', user.id)
         .single();
-      
+
       if (profile?.full_name) {
         setUserName(profile.full_name);
       } else {
@@ -171,7 +181,7 @@ export default function AdminDashboard() {
           stock_filter: null,
           category_filter: null,
         });
-      
+
       // Get low stock count
       const { data: lowStockData } = await supabase
         .rpc('count_products', {
@@ -179,17 +189,17 @@ export default function AdminDashboard() {
           stock_filter: 'low',
           category_filter: null,
         });
-      
+
       // Get total value (sampling for performance)
       const { data: valueData } = await supabase
         .from('products')
         .select('quantity, price')
         .eq('is_active', true)
         .limit(1000); // Sample for estimation
-      
+
       const sampleValue = valueData?.reduce((sum, p) => sum + (p.quantity * p.price), 0) || 0;
       const estimatedTotalValue = totalData ? (sampleValue * totalData / 1000) : 0;
-      
+
       setStats({
         totalProducts: totalData || 0,
         lowStockCount: lowStockData || 0,
@@ -202,10 +212,10 @@ export default function AdminDashboard() {
 
   const fetchProducts = async (page: number = 0, reset: boolean = false) => {
     if (!reset && (isLoading || !hasMore)) return;
-    
+
     setIsLoading(true);
     setIsLoadingMore(!reset && page > 0);
-    
+
     try {
       // Fetch products using optimized search function
       const { data, error } = await supabase.rpc('search_products', {
@@ -219,23 +229,23 @@ export default function AdminDashboard() {
       if (error) throw error;
 
       const newProducts = data || [];
-      
+
       if (reset) {
         setProducts(newProducts);
       } else {
         setProducts(prev => [...prev, ...newProducts]);
       }
-      
+
       setHasMore(newProducts.length === PAGE_SIZE);
       setCurrentPage(page);
-      
+
       // Get total count for pagination info
       const { data: countData } = await supabase.rpc('count_products', {
         search_query: debouncedSearchQuery || '',
         stock_filter: stockFilter,
         category_filter: categoryFilter,
       });
-      
+
       setTotalProducts(countData || 0);
     } catch (error) {
       console.error('Error fetching products:', error);
@@ -345,7 +355,7 @@ export default function AdminDashboard() {
                 .eq('id', productId);
 
               if (error) throw error;
-              
+
               Alert.alert('Success', 'Product deleted successfully');
               handleRefresh();
             } catch (error) {
@@ -371,13 +381,13 @@ export default function AdminDashboard() {
             <Text style={styles.productId}>{product.product_id}</Text>
           </View>
           <View style={styles.productActions}>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => handleEditProduct(product)}
               style={styles.actionButton}
             >
               <Ionicons name="create-outline" size={20} color="#666" />
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => handleDeleteProduct(product.id)}
               style={styles.actionButton}
             >
@@ -387,7 +397,7 @@ export default function AdminDashboard() {
         </View>
 
         <Text style={styles.productName}>{product.product_name}</Text>
-        
+
         {product.barcode && (
           <View style={styles.barcodeContainer}>
             <Ionicons name="barcode-outline" size={16} color="#666" />
@@ -480,49 +490,49 @@ export default function AdminDashboard() {
       </View>
 
       <View style={styles.filterContainer}>
-        <ScrollView 
-          horizontal 
+        <ScrollView
+          horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterScrollContent}
         >
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.filterChip, stockFilter === 'low' && styles.filterChipActive]}
             onPress={() => setStockFilter(stockFilter === 'low' ? null : 'low')}
           >
-            <Ionicons 
-              name="alert-circle-outline" 
-              size={16} 
-              color={stockFilter === 'low' ? '#FFF' : '#E74C3C'} 
+            <Ionicons
+              name="alert-circle-outline"
+              size={16}
+              color={stockFilter === 'low' ? '#FFF' : '#E74C3C'}
               style={styles.filterIcon}
             />
             <Text style={[styles.filterChipText, stockFilter === 'low' && styles.filterChipTextActive]}>
               Low Stock
             </Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={[styles.filterChip, stockFilter === 'medium' && styles.filterChipActive]}
             onPress={() => setStockFilter(stockFilter === 'medium' ? null : 'medium')}
           >
-            <Ionicons 
-              name="remove-circle-outline" 
-              size={16} 
-              color={stockFilter === 'medium' ? '#FFF' : '#F39C12'} 
+            <Ionicons
+              name="remove-circle-outline"
+              size={16}
+              color={stockFilter === 'medium' ? '#FFF' : '#F39C12'}
               style={styles.filterIcon}
             />
             <Text style={[styles.filterChipText, stockFilter === 'medium' && styles.filterChipTextActive]}>
               Medium Stock
             </Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={[styles.filterChip, stockFilter === 'high' && styles.filterChipActive]}
             onPress={() => setStockFilter(stockFilter === 'high' ? null : 'high')}
           >
-            <Ionicons 
-              name="checkmark-circle-outline" 
-              size={16} 
-              color={stockFilter === 'high' ? '#FFF' : '#27AE60'} 
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={16}
+              color={stockFilter === 'high' ? '#FFF' : '#27AE60'}
               style={styles.filterIcon}
             />
             <Text style={[styles.filterChipText, stockFilter === 'high' && styles.filterChipTextActive]}>
@@ -597,7 +607,7 @@ export default function AdminDashboard() {
         transparent={true}
         onRequestClose={() => setIsEditModalVisible(false)}
       >
-        <KeyboardAvoidingView 
+        <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalContainer}
         >
@@ -616,7 +626,7 @@ export default function AdminDashboard() {
                   <TextInput
                     style={styles.modalInput}
                     value={editedProduct.product_name}
-                    onChangeText={(text) => setEditedProduct({...editedProduct, product_name: text})}
+                    onChangeText={(text) => setEditedProduct({ ...editedProduct, product_name: text })}
                   />
                 </View>
 
@@ -625,7 +635,7 @@ export default function AdminDashboard() {
                   <TextInput
                     style={styles.modalInput}
                     value={editedProduct.barcode || ''}
-                    onChangeText={(text) => setEditedProduct({...editedProduct, barcode: text})}
+                    onChangeText={(text) => setEditedProduct({ ...editedProduct, barcode: text })}
                     placeholder="Enter barcode"
                     keyboardType="numeric"
                   />
@@ -637,7 +647,7 @@ export default function AdminDashboard() {
                     <TextInput
                       style={styles.modalInput}
                       value={editedProduct.quantity.toString()}
-                      onChangeText={(text) => setEditedProduct({...editedProduct, quantity: parseInt(text) || 0})}
+                      onChangeText={(text) => setEditedProduct({ ...editedProduct, quantity: parseInt(text) || 0 })}
                       keyboardType="numeric"
                     />
                   </View>
@@ -647,7 +657,7 @@ export default function AdminDashboard() {
                     <TextInput
                       style={styles.modalInput}
                       value={editedProduct.unit}
-                      onChangeText={(text) => setEditedProduct({...editedProduct, unit: text})}
+                      onChangeText={(text) => setEditedProduct({ ...editedProduct, unit: text })}
                     />
                   </View>
                 </View>
@@ -657,19 +667,19 @@ export default function AdminDashboard() {
                   <TextInput
                     style={styles.modalInput}
                     value={editedProduct.price.toString()}
-                    onChangeText={(text) => setEditedProduct({...editedProduct, price: parseFloat(text) || 0})}
+                    onChangeText={(text) => setEditedProduct({ ...editedProduct, price: parseFloat(text) || 0 })}
                     keyboardType="decimal-pad"
                   />
                 </View>
 
                 <View style={styles.modalButtons}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.modalButton, styles.cancelButton]}
                     onPress={() => setIsEditModalVisible(false)}
                   >
                     <Text style={styles.cancelButtonText}>Cancel</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.modalButton, styles.saveButton]}
                     onPress={handleSaveProduct}
                   >

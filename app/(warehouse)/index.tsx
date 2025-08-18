@@ -1,15 +1,17 @@
+//here is a layout of the tabs that will exist for the warehouse operator
+//but not done
 // app/(warehouse)/index.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    SafeAreaView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { supabase } from '../../src/lib/supabase';
 
@@ -38,7 +40,7 @@ export default function WarehouseOperatorDashboard() {
           .select('full_name')
           .eq('id', user.id)
           .single();
-        
+
         if (profile?.full_name) {
           setUserName(profile.full_name);
         } else {
