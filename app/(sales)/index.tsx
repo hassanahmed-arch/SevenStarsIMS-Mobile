@@ -1,4 +1,4 @@
-// app/(sales)/index.tsx - Updated Sales Dashboard with Improvements
+// app/(sales)/index.tsx - Fixed Sales Dashboard with OrderProcessor Integration
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,8 +17,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import InvoiceGenerator from '../../src/components/sales/InvoiceGenerator';
-import OrderSummary from '../../src/components/sales/OrderSummary';
+import OrderProcessor from '../../src/components/sales/OrderProcessor';
 import PastOrders from '../../src/components/sales/PastOrders';
 import SalesAnalytics from '../../src/components/sales/SalesAnalytics';
 import { supabase } from '../../src/lib/supabase';
@@ -65,7 +64,6 @@ interface OrderForm {
   items: OrderItem[];
 }
 
-// Product item with local state for quantity and price
 interface ProductItemState {
   product: Product;
   quantity: string;
@@ -95,9 +93,7 @@ export default function SalesAgentDashboard() {
   const [showDateModal, setShowDateModal] = useState(false);
   const [showTimeModal, setShowTimeModal] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
-  const [showOrderSummary, setShowOrderSummary] = useState(false);
-  const [showInvoice, setShowInvoice] = useState(false);
-  const [savedOrderId, setSavedOrderId] = useState<string | null>(null);
+  const [showOrderProcessor, setShowOrderProcessor] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [productSearchQuery, setProductSearchQuery] = useState('');
   
@@ -271,7 +267,7 @@ export default function SalesAgentDashboard() {
     return filtered;
   }, [productSearchQuery, products]);
 
-  // Calculate order totals - Fixed to include out of stock items
+  // Calculate order totals
   const orderSummary = useMemo(() => {
     const subtotal = orderForm.items.reduce((sum, item) => sum + item.total_price, 0);
     const tax = subtotal * 0.1;
@@ -370,19 +366,9 @@ export default function SalesAgentDashboard() {
       return;
     }
 
-    if (orderSummary.hasOutOfStock) {
-      Alert.alert(
-        'Out of Stock Items',
-        'Some items in your order are out of stock. The order will be created but may need adjustment.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Proceed', onPress: () => setShowOrderSummary(true) }
-        ]
-      );
-    } else {
-      setShowOrderSummary(true);
-    }
-  }, [orderForm, orderSummary]);
+    // Show OrderProcessor instead of the old flow
+    setShowOrderProcessor(true);
+  }, [orderForm]);
 
   const handleLogout = async () => {
     Alert.alert(
@@ -523,6 +509,18 @@ export default function SalesAgentDashboard() {
       }
       return newMap;
     });
+  };
+
+  const resetOrderForm = () => {
+    setOrderForm({
+      customerId: '',
+      deliveryDate: new Date(),
+      deliveryTime: new Date(),
+      paymentType: 'cash',
+      orderType: 'pickup',
+      items: [],
+    });
+    setSelectedCustomer(null);
   };
 
   return (
@@ -781,7 +779,7 @@ export default function SalesAgentDashboard() {
         <SalesAnalytics salesAgentId={userId} />
       )}
 
-      {/* Customer Selection Modal - Updated with Search */}
+      {/* Customer Selection Modal */}
       <Modal
         visible={showCustomerModal}
         animationType="slide"
@@ -880,6 +878,7 @@ export default function SalesAgentDashboard() {
         </View>
       </Modal>
 
+      {/* Other Modals (Order Type, Payment Type, etc.) remain the same */}
       {/* Order Type Modal */}
       <Modal
         visible={showOrderTypeModal}
@@ -945,7 +944,7 @@ export default function SalesAgentDashboard() {
         </View>
       </Modal>
 
-      {/* Product Selection Modal - Updated with individual controls */}
+      {/* Product Selection Modal */}
       <Modal
         visible={showProductModal}
         animationType="slide"
@@ -1080,7 +1079,6 @@ export default function SalesAgentDashboard() {
         </View>
       </Modal>
 
-      {/* Date and Time Modals remain the same */}
       {/* Date Modal */}
       <Modal
         visible={showDateModal}
@@ -1285,51 +1283,17 @@ export default function SalesAgentDashboard() {
         </View>
       </Modal>
 
-      {/* Order Summary Modal */}
-      {showOrderSummary && (
-        <OrderSummary
-          orderForm={orderForm}
-          customer={selectedCustomer}
-          orderSummary={orderSummary}
-          salesAgentId={userId}
-          onClose={() => setShowOrderSummary(false)}
-          onConfirm={(orderId) => {
-            setSavedOrderId(orderId);
-            setShowOrderSummary(false);
-            setShowInvoice(true);
-          }}
-        />
-      )}
-
-      {/* Invoice Generator */}
-      {showInvoice && savedOrderId && (
-        <InvoiceGenerator
-          orderId={savedOrderId}
-          customer={selectedCustomer}
-          items={orderForm.items.map(item => ({
-            product_name: item.product.product_name,
-            sku: item.product.sku,
-            quantity: item.quantity,
-            unit: item.product.unit,
-            unit_price: item.unit_price,
-            total_price: item.total_price,
-          }))}
-          orderSummary={orderSummary}
+      {/* Order Processor Modal - This is the key change! */}
+      {showOrderProcessor && (
+        <OrderProcessor
           orderData={orderForm}
+          customerId={orderForm.customerId}
+          salesAgentId={userId}
           onClose={() => {
-            setShowInvoice(false);
-            // Reset form
-            setOrderForm({
-              customerId: '',
-              deliveryDate: new Date(),
-              deliveryTime: new Date(),
-              paymentType: 'cash',
-              orderType: 'pickup',
-              items: [],
-            });
-            setSelectedCustomer(null);
-            setSavedOrderId(null);
-            Alert.alert('Success', 'Order created successfully!');
+            setShowOrderProcessor(false);
+            // Reset the order form after successful completion
+            resetOrderForm();
+            Alert.alert('Success', 'Order created successfully with customer pricing applied!');
           }}
         />
       )}
@@ -1338,6 +1302,7 @@ export default function SalesAgentDashboard() {
 }
 
 const styles = StyleSheet.create({
+  // All the existing styles from your original file
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
@@ -1705,7 +1670,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
   },
-  // Customer search styles
   customerSearchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1844,7 +1808,6 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 15,
   },
-  // Updated product item styles for better layout
   productItemCard: {
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
@@ -1943,7 +1906,6 @@ const styles = StyleSheet.create({
   addProductButton: {
     padding: 4,
   },
-  // Calendar styles
   quickDateOptions: {
     paddingHorizontal: 20,
     paddingVertical: 15,
@@ -2023,7 +1985,6 @@ const styles = StyleSheet.create({
   disabledDayText: {
     color: '#CCC',
   },
-  // Time picker styles
   timeModalContent: {
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 20,

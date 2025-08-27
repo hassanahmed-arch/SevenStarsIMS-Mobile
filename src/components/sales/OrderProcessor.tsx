@@ -1,20 +1,5 @@
-// src/components/sales/OrderProcessor.tsx
-
-
-//IMP notes: why do we match the products using Sku and what if i changed the sku 
-//to something easier for the sales agent?
-
-//why do i need to write the unti first before the product name like why isnt 
-//the product name enough?
-
-// we need to create something called scheduling matching meaning that after we
-// send the order to the warehouse manager i want to suggest warehouse operators
-//to pick from based on who has the least amount of orders and maybe other parameters
-//for more advanced matching
-
-
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -27,19 +12,30 @@ import {
   View,
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
-import InvoiceGenerator from './InvoiceGenerator';
+import ProposalGenerator from './ProposalGenerator';
 
 interface OrderProcessorProps {
   orderData: {
-    naturalLanguageOrder: string;
     customerId: string;
     deliveryDate: Date;
     deliveryTime: Date;
     paymentType: string;
+    orderType: string;
+    items: OrderItem[];
   };
   customerId: string;
   salesAgentId: string;
   onClose: () => void;
+}
+
+interface OrderItem {
+  product: any;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+  in_stock: boolean;
+  stock_status: 'in_stock' | 'out_of_stock' | 'low_stock';
+  custom_price?: boolean;
 }
 
 interface ProcessedItem {
@@ -56,127 +52,77 @@ interface ProcessedItem {
   in_stock: boolean;
   current_stock?: number;
   stock_status?: string;
+  customer_price?: number | null;
+  using_customer_price?: boolean;
+  price_valid?: boolean;
+  price_expires?: string | null;
+  discount_percentage?: number;
 }
 
-interface Customer {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  city: string;
-  state: string;
-  zip_code: string;
-}
-
-interface Product {
-  id: string;
+interface CustomerPriceHistory {
   product_id: string;
-  product_name: string;
-  sku?: string;
-  barcode?: string;
+  last_price: number;
+  last_quantity: number;
+  last_unit: string;
+  last_order_date: string;
+  times_ordered: number;
+  valid_until?: string | null;
+  price_locked?: boolean;
+  original_price?: number;
+}
+
+interface PriceHistoryDetail {
   price: number;
+  date: string;
   quantity: number;
-  unit: string;
-  is_active?: boolean;
-}
-
-// Text similarity calculation (from openai2.ts)
-function calculateSimilarity(text1: string, text2: string): number {
-  const words1 = text1.toLowerCase().split(/\s+/)
-  const words2 = text2.toLowerCase().split(/\s+/)
-
-  const commonWords = words1.filter(word => words2.includes(word))
-  const totalWords = new Set([...words1, ...words2]).size
-
-  return commonWords.length / totalWords
-}
-
-// Find inventory matches using semantic search (adapted from openai2.ts)
-async function findInventoryMatches(extractedProduct: string, limit = 10) {
-  try {
-    // First, try exact matches in product_name and sku (adapted from openai2.ts)
-    const { data: exactMatches, error: exactError } = await supabase
-      .from('products')
-      .select('id, product_id, product_name, sku, category, quantity, price, unit')
-      .or(`product_name.ilike.%${extractedProduct}%,sku.ilike.%${extractedProduct}%`)
-      .eq('is_active', true)
-      .limit(limit)
-
-    if (exactError) {
-      console.error('Error in exact search:', exactError)
-    }
-
-    // If we have exact matches, return them
-    if (exactMatches && exactMatches.length > 0) {
-      return exactMatches.map(item => ({
-        ...item,
-        similarity: calculateSimilarity(extractedProduct, item.product_name),
-        matchType: 'exact'
-      })).sort((a, b) => b.similarity - a.similarity)
-    }
-
-    // If no exact matches, do a broader search and use similarity scoring
-    const { data: allItems, error: allError } = await supabase
-      .from('products')
-      .select('id, product_id, product_name, sku, category, quantity, price, unit')
-      .eq('is_active', true)
-      .limit(500) // Get a larger sample for similarity matching
-
-    if (allError || !allItems) {
-      console.error('Error in broad search:', allError)
-      return []
-    }
-
-    // Calculate similarity scores for all items
-    const scoredItems = allItems.map(item => ({
-      ...item,
-      similarity: Math.max(
-        calculateSimilarity(extractedProduct, item.product_name),
-        calculateSimilarity(extractedProduct, item.sku || ''),
-        calculateSimilarity(extractedProduct, item.category || '')
-      ),
-      matchType: 'similarity'
-    }))
-
-    // Return top matches with similarity > 0.1
-    return scoredItems
-      .filter(item => item.similarity > 0.1)
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit)
-
-  } catch (error) {
-    console.error('Error finding inventory matches:', error)
-    return []
-  }
+  order_id?: string;
 }
 
 export default function OrderProcessor({ orderData, customerId, salesAgentId, onClose }: OrderProcessorProps) {
   const [isProcessing, setIsProcessing] = useState(true);
   const [processedItems, setProcessedItems] = useState<ProcessedItem[]>([]);
-  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [customer, setCustomer] = useState<any>(null);
+  const [customerPriceHistory, setCustomerPriceHistory] = useState<Map<string, CustomerPriceHistory>>(new Map());
   const [orderSummary, setOrderSummary] = useState({
     subtotal: 0,
     tax: 0,
     total: 0,
     allInStock: true,
+    totalSavings: 0,
   });
-  const [showInvoice, setShowInvoice] = useState(false);
+  const [showProposal, setShowProposal] = useState(false);
   const [savedOrderId, setSavedOrderId] = useState<string | null>(null);
   const [editingItems, setEditingItems] = useState<{ [key: number]: ProcessedItem }>({});
   const [expandedItem, setExpandedItem] = useState<number | null>(null);
-
-  // Manual item addition states
   const [showAddItemModal, setShowAddItemModal] = useState(false);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
+  const [filteredProducts, setFilteredProducts] = useState<any[]>([]);
+  const [showPriceHistory, setShowPriceHistory] = useState(false);
+  const [selectedProductHistory, setSelectedProductHistory] = useState<PriceHistoryDetail[]>([]);
+  const [selectedProductName, setSelectedProductName] = useState('');
 
   useEffect(() => {
-    processOrder();
-    fetchCustomer();
-    fetchProducts();
-  }, []);
+    let isMounted = true;
+    
+    const initializeData = async () => {
+      if (!customerId) {
+        Alert.alert('Error', 'Please select a customer before adding items to the order.');
+        onClose();
+        return;
+      }
+      
+      if (isMounted) {
+        await fetchInitialData();
+      }
+    };
+    
+    initializeData();
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [customerId]); 
 
   useEffect(() => {
     if (searchQuery) {
@@ -191,6 +137,33 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
     }
   }, [searchQuery, products]);
 
+  const fetchInitialData = async () => {
+    setIsProcessing(true);
+    try {
+      const customerData = await fetchCustomer();
+      if (!customerData) {
+        Alert.alert('Error', 'Customer not found. Please select a valid customer.');
+        onClose();
+        return;
+      }
+
+      const [productsData, priceHistoryMap] = await Promise.all([
+        fetchProducts(),
+        fetchCustomerPriceHistory()
+      ]);
+
+      if (productsData && priceHistoryMap) {
+        await processOrderItems(priceHistoryMap);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching initial data:', error);
+      Alert.alert('Error', 'Failed to load order data. Please try again.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const fetchCustomer = async () => {
     try {
       const { data, error } = await supabase
@@ -201,8 +174,10 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
       if (error) throw error;
       setCustomer(data);
+      return data;
     } catch (error) {
       console.error('Error fetching customer:', error);
+      return null;
     }
   };
 
@@ -216,229 +191,268 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
       if (error) throw error;
       setProducts(data || []);
+      return data;
     } catch (error) {
       console.error('Error fetching products:', error);
+      return [];
     }
   };
 
-  const addProductManually = (product: Product) => {
+  const fetchCustomerPriceHistory = async (): Promise<Map<string, CustomerPriceHistory>> => {
+    try {
+      console.log('Fetching price history for customer:', customerId);
+      
+      const { data, error } = await supabase
+        .from('customer_price_history')
+        .select('*')
+        .eq('customer_id', customerId);
+
+      if (error) {
+        console.error('Customer price history error:', error);
+        return new Map();
+      }
+
+      const priceMap = new Map<string, CustomerPriceHistory>();
+      const now = new Date();
+      
+      (data || []).forEach(item => {
+        // Check if price is still valid
+        const isValid = !item.valid_until || new Date(item.valid_until) > now;
+        
+        if (isValid || item.price_locked) {
+          priceMap.set(item.product_id, {
+            product_id: item.product_id,
+            last_price: Number(item.last_price),
+            last_quantity: item.last_quantity,
+            last_unit: item.last_unit,
+            last_order_date: item.last_order_date,
+            times_ordered: item.times_ordered,
+            valid_until: item.valid_until,
+            price_locked: item.price_locked,
+            original_price: item.original_price
+          });
+        }
+      });
+      
+      console.log('Customer price history loaded:', priceMap.size, 'valid items');
+      setCustomerPriceHistory(priceMap);
+      return priceMap;
+    } catch (error) {
+      console.error('Error fetching customer price history:', error);
+      return new Map();
+    }
+  };
+
+  const fetchProductPriceHistory = async (productId: string, productName: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('price_change_log')
+        .select('*')
+        .eq('customer_id', customerId)
+        .eq('product_id', productId)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (error) throw error;
+
+      const history: PriceHistoryDetail[] = (data || []).map(item => ({
+        price: item.new_price,
+        date: new Date(item.created_at).toLocaleDateString(),
+        quantity: 0,
+        order_id: item.order_id
+      }));
+
+      setSelectedProductHistory(history);
+      setSelectedProductName(productName);
+      setShowPriceHistory(true);
+    } catch (error) {
+      console.error('Error fetching price history:', error);
+      Alert.alert('Error', 'Failed to load price history');
+    }
+  };
+
+  const processOrderItems = async (priceHistoryMap?: Map<string, CustomerPriceHistory>) => {
+    try {
+      if (!orderData || !orderData.items || orderData.items.length === 0) {
+        console.log('No items to process');
+        setProcessedItems([]);
+        updateOrderSummary([]);
+        return;
+      }
+      
+      const priceHistory = priceHistoryMap || customerPriceHistory;
+      const appliedPrices: Array<{name: string, saved: number, discount: number}> = [];
+      
+      const items: ProcessedItem[] = orderData.items.flatMap(item => {
+        if (!item || !item.product) {
+          console.error('Invalid item or product:', item);
+          return [];
+        }
+        
+        const customerPrice = priceHistory.get(item.product.id);
+        const regularPrice = item.product.price || 0;
+        const hasCustomerPrice = !!customerPrice;
+        const usingCustomerPrice = hasCustomerPrice && !item.custom_price;
+        
+        // Check for significant price differences
+        let finalPrice = item.unit_price || 0;
+        let priceAlert = false;
+        
+        if (usingCustomerPrice && customerPrice) {
+          finalPrice = Number(customerPrice.last_price);
+          const priceDifference = Math.abs((customerPrice.last_price - regularPrice) / regularPrice);
+          
+          if (priceDifference > 0.5) { // 50% difference
+            priceAlert = true;
+          }
+          
+          const savings = (regularPrice - finalPrice) * (item.quantity || 1);
+          const discountPercent = ((regularPrice - finalPrice) / regularPrice * 100);
+          
+          if (savings > 0) {
+            appliedPrices.push({
+              name: item.product.product_name,
+              saved: savings,
+              discount: discountPercent
+            });
+          }
+          
+          console.log(`Applied customer price for ${item.product.product_name}: $${finalPrice} (was $${regularPrice})`);
+        }
+        
+        // Ensure price is not negative or zero
+        finalPrice = Math.max(0.01, finalPrice);
+        
+        return [{
+          original_text: 'Manual Entry',
+          matched_product: item.product,
+          product_name: item.product.product_name || 'Unknown Product',
+          product_id: item.product.id,
+          sku: item.product.sku || '',
+          quantity: item.quantity || 1,
+          unit: item.product.unit || 'unit',
+          unit_price: finalPrice,
+          total_price: (item.quantity || 1) * finalPrice,
+          confidence: 'high' as const,
+          in_stock: item.in_stock ?? true,
+          current_stock: item.product.quantity || 0,
+          stock_status: item.stock_status || 'unknown',
+          customer_price: customerPrice?.last_price ?? null,
+          using_customer_price: usingCustomerPrice,
+          price_valid: customerPrice ? (!customerPrice.valid_until || new Date(customerPrice.valid_until) > new Date()) : true,
+          price_expires: customerPrice?.valid_until,
+          discount_percentage: usingCustomerPrice ? ((regularPrice - finalPrice) / regularPrice * 100) : 0,
+        }];
+      });
+
+      setProcessedItems(items);
+      updateOrderSummary(items);
+      
+      // Show detailed notification if customer prices were applied
+      if (appliedPrices.length > 0) {
+        const totalSavings = appliedPrices.reduce((sum, item) => sum + item.saved, 0);
+        const itemsList = appliedPrices.map(item => 
+          `• ${item.name}: ${item.discount.toFixed(1)}% off ($${item.saved.toFixed(2)} saved)`
+        ).join('\n');
+        
+        Alert.alert(
+          'Customer Prices Applied',
+          `${appliedPrices.length} item(s) updated with customer pricing:\n\n${itemsList}\n\nTotal savings: $${totalSavings.toFixed(2)}`,
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Error processing order items:', error);
+      Alert.alert('Error', 'Failed to process order items.');
+      setProcessedItems([]);
+      updateOrderSummary([]);
+    }
+  };
+
+  const addProductManually = (product: any) => {
+    if (!customerId || !customer) {
+      Alert.alert(
+        'Customer Required',
+        'Please select a customer before adding products to the order.',
+        [{ text: 'OK' }]
+      );
+      setShowAddItemModal(false);
+      return;
+    }
+
+    const customerPrice = customerPriceHistory.get(product.id);
+    const useCustomerPrice = !!customerPrice && (!customerPrice.valid_until || new Date(customerPrice.valid_until) > new Date());
+    const finalPrice = useCustomerPrice ? Number(customerPrice.last_price) : product.price;
+
     const newItem: ProcessedItem = {
       original_text: 'Manual Entry',
+      matched_product: product,
       product_name: product.product_name,
       product_id: product.id,
       sku: product.sku,
       quantity: 1,
       unit: product.unit,
-      unit_price: product.price,
-      total_price: product.price,
+      unit_price: Math.max(0.01, finalPrice),
+      total_price: Math.max(0.01, finalPrice),
       confidence: 'high',
       in_stock: product.quantity > 0,
       current_stock: product.quantity,
       stock_status: product.quantity > 0 ? 'in_stock' : 'out_of_stock',
+      customer_price: customerPrice?.last_price ?? null,
+      using_customer_price: useCustomerPrice,
+      price_valid: useCustomerPrice,
+      price_expires: customerPrice?.valid_until,
+      discount_percentage: useCustomerPrice ? ((product.price - finalPrice) / product.price * 100) : 0,
     };
 
     setProcessedItems([...processedItems, newItem]);
-
-    // Recalculate totals
-    const updatedItems = [...processedItems, newItem];
-    const subtotal = updatedItems.reduce((sum, item) => sum + item.total_price, 0);
-    const tax = subtotal * 0.1;
-    const total = subtotal + tax;
-    const allInStock = updatedItems.every(item => item.in_stock);
-
-    setOrderSummary({ subtotal, tax, total, allInStock });
+    updateOrderSummary([...processedItems, newItem]);
     setSearchQuery('');
     setShowAddItemModal(false);
-  };
 
-  const processOrder = async () => {
-    setIsProcessing(true);
-
-    try {
-      // Step 1: Process with AI (using OpenAI or similar)
-      const aiProcessedItems = await processWithAI(orderData.naturalLanguageOrder);
-
-      // Step 2: Match with inventory and check stock
-      const matchedItems = await matchWithInventory(aiProcessedItems);
-
-      // Step 3: Calculate totals
-      const subtotal = matchedItems.reduce((sum, item) => sum + item.total_price, 0);
-      const tax = subtotal * 0.1; // 10% tax
-      const total = subtotal + tax;
-      const allInStock = matchedItems.every(item => item.in_stock);
-
-      setProcessedItems(matchedItems);
-      setOrderSummary({ subtotal, tax, total, allInStock });
-    } catch (error) {
-      console.error('Error processing order:', error);
-      Alert.alert('Error', 'Failed to process order. Please try again.');
-    } finally {
-      setIsProcessing(false);
+    if (useCustomerPrice) {
+      const savings = product.price - finalPrice;
+      const validUntil = customerPrice.valid_until ? 
+        `\nPrice valid until: ${new Date(customerPrice.valid_until).toLocaleDateString()}` : '';
+      
+      Alert.alert(
+        'Customer Price Applied',
+        `Using customer's negotiated price of $${finalPrice.toFixed(2)}\n` +
+        `Regular price: $${product.price.toFixed(2)}\n` +
+        `Savings: $${savings.toFixed(2)} (${((savings/product.price)*100).toFixed(1)}%)\n` +
+        `Previously ordered ${customerPrice.times_ordered} time${customerPrice.times_ordered > 1 ? 's' : ''}${validUntil}`,
+        [{ text: 'OK' }]
+      );
     }
   };
 
-  const processWithAI = async (naturalLanguageOrder: string): Promise<ProcessedItem[]> => {
-    try {
-      // Use the existing OpenAI service with sophisticated parsing
-      const { processOrderWithAI } = await import('../../services/openai');
-      const parsedItems = await processOrderWithAI(naturalLanguageOrder);
-
-      // Convert to ProcessedItem format
-      const items: ProcessedItem[] = parsedItems.map((item) => ({
-        original_text: item.original_text || item.product_name,
-        product_name: item.product_name,
-        quantity: item.quantity,
-        unit: item.unit,
-        unit_price: item.price || 0,
-        total_price: (item.price || 0) * item.quantity,
-        confidence: item.confidence,
-        in_stock: false,
-      }));
-
-      return items;
-    } catch (error) {
-      console.error('Error calling OpenAI service:', error);
-
-      // Fallback to enhanced basic parsing if AI service fails
-      return processWithBasicParser(naturalLanguageOrder);
-    }
-  };
-
-  const processWithBasicParser = (naturalLanguageOrder: string): ProcessedItem[] => {
-    const items: ProcessedItem[] = [];
-
-    // Enhanced parsing to handle "and" separators and multiple products
-    const text = naturalLanguageOrder.toLowerCase();
-
-    // Split by "and" first, then by commas as fallback
-    let segments = text.split(' and ');
-    if (segments.length === 1) {
-      segments = text.split(',');
-    }
-
-    for (const segment of segments) {
-      const trimmedSegment = segment.trim();
-      if (!trimmedSegment) continue;
-
-      // Extract quantity
-      const quantityMatch = trimmedSegment.match(/(\d+)\s*(cases?|boxes?|packs?|pieces?|cartons?|bottles?)/i);
-      const quantity = quantityMatch ? parseInt(quantityMatch[1]) : 1;
-      const unit = quantityMatch ? quantityMatch[2].replace(/s$/, '') : 'piece';
-
-      // Extract price if mentioned
-      const priceMatch = trimmedSegment.match(/\$?\s*(\d+(?:\.\d{2})?)\s*(?:each|per|\/)?/i);
-      const unitPrice = priceMatch ? parseFloat(priceMatch[1]) : 0;
-
-      // Extract product name (remove quantity and price parts)
-      let productName = trimmedSegment
-        .replace(/^\d+\s*(cases?|boxes?|packs?|pieces?|cartons?|bottles?)\s*(?:of\s*)?/i, '')
-        .replace(/\$?\s*\d+(?:\.\d{2})?\s*(?:each|per|\/)?/i, '')
-        .replace(/^\s*of\s*/i, '')
-        .trim();
-
-      if (productName) {
-        items.push({
-          original_text: segment.trim(),
-          product_name: productName,
-          quantity,
-          unit,
-          unit_price: unitPrice,
-          total_price: quantity * unitPrice,
-          confidence: 'medium',
-          in_stock: false,
-        });
+  const updateOrderSummary = useCallback((items: ProcessedItem[]) => {
+    const validItems = items.filter(item => item && typeof item.total_price === 'number');
+    const subtotal = validItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
+    const tax = subtotal * 0.1;
+    const total = subtotal + tax;
+    const allInStock = validItems.length > 0 && validItems.every(item => item.in_stock);
+    
+    // Calculate total savings
+    const totalSavings = validItems.reduce((sum, item) => {
+      if (item.using_customer_price && item.matched_product) {
+        const regularPrice = item.matched_product.price || item.unit_price;
+        return sum + ((regularPrice - item.unit_price) * item.quantity);
       }
-    }
+      return sum;
+    }, 0);
 
-    return items;
-  };
+    setOrderSummary({ subtotal, tax, total, allInStock, totalSavings });
+  }, []);
 
-  const matchWithInventory = async (aiItems: ProcessedItem[]): Promise<ProcessedItem[]> => {
-    const processedItems: ProcessedItem[] = [];
-
-    for (const extractedItem of aiItems) {
-      // Find potential matches using openai2.ts logic
-      const candidates = await findInventoryMatches(extractedItem.product_name, 10);
-
-      let confidence: 'high' | 'medium' | 'low' | 'no_match' = 'no_match';
-      let stockStatus: 'in_stock' | 'low_stock' | 'out_of_stock' | 'not_found' = 'not_found';
-      let finalPrice = 0;
-      let bestMatch = null;
-
-      if (candidates.length > 0) {
-        // Take the best match (highest similarity)
-        bestMatch = candidates[0];
-
-        // Determine confidence based on similarity score (from openai2.ts)
-        if (bestMatch.similarity > 0.7) {
-          confidence = 'high';
-        } else if (bestMatch.similarity > 0.4) {
-          confidence = 'medium';
-        } else {
-          confidence = 'low';
-        }
-
-        // Determine stock status
-        const stock = Number(bestMatch.quantity || 0);
-        if (stock === 0) {
-          stockStatus = 'out_of_stock';
-        } else if (stock < extractedItem.quantity) {
-          stockStatus = 'low_stock';
-        } else {
-          stockStatus = 'in_stock';
-        }
-
-        // Use inventory price (from openai2.ts logic)
-        if (bestMatch.price) {
-          finalPrice = Number(bestMatch.price);
-        }
-      }
-
-      if (bestMatch) {
-        processedItems.push({
-          original_text: extractedItem.original_text,
-          matched_product: bestMatch,
-          product_id: bestMatch.id,
-          product_name: bestMatch.product_name,
-          sku: bestMatch.sku,
-          quantity: extractedItem.quantity,
-          unit: extractedItem.unit,
-          unit_price: finalPrice,
-          total_price: extractedItem.quantity * finalPrice,
-          confidence,
-          in_stock: stockStatus === 'in_stock',
-          current_stock: bestMatch.quantity,
-          stock_status: stockStatus,
-        });
-      } else {
-        // No match found
-        processedItems.push({
-          original_text: extractedItem.original_text,
-          product_name: extractedItem.product_name,
-          quantity: extractedItem.quantity,
-          unit: extractedItem.unit,
-          unit_price: 0,
-          total_price: 0,
-          confidence: 'no_match',
-          in_stock: false,
-          stock_status: 'not_found',
-        });
-      }
-    }
-
-    return processedItems;
-  };
-
-  // Rest of the component methods remain the same...
   const handleItemEdit = (index: number, field: string, value: any) => {
     const updatedItem = { ...processedItems[index], [field]: value };
 
-    // Recalculate total if quantity or price changed
     if (field === 'quantity' || field === 'unit_price') {
       updatedItem.total_price = updatedItem.quantity * updatedItem.unit_price;
+      updatedItem.using_customer_price = false;
     }
 
-    // Recalculate stock status if quantity changed
     if (field === 'quantity' && updatedItem.current_stock !== undefined) {
       const requestedQty = parseInt(value) || 0;
       const availableStock = updatedItem.current_stock;
@@ -457,19 +471,11 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
     setEditingItems({ ...editingItems, [index]: updatedItem });
   };
 
-  // Save, remove item, and all other methods remain exactly the same as in the original file...
   const saveItemEdit = (index: number) => {
     const updatedItems = [...processedItems];
     updatedItems[index] = editingItems[index] || processedItems[index];
     setProcessedItems(updatedItems);
-
-    // Recalculate totals and stock status
-    const subtotal = updatedItems.reduce((sum, item) => sum + item.total_price, 0);
-    const tax = subtotal * 0.1;
-    const total = subtotal + tax;
-    const allInStock = updatedItems.every(item => item.in_stock);
-
-    setOrderSummary({ subtotal, tax, total, allInStock });
+    updateOrderSummary(updatedItems);
     delete editingItems[index];
     setEditingItems({ ...editingItems });
   };
@@ -486,20 +492,36 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
           onPress: () => {
             const updatedItems = processedItems.filter((_, i) => i !== index);
             setProcessedItems(updatedItems);
-
-            // Recalculate totals
-            const subtotal = updatedItems.reduce((sum, item) => sum + item.total_price, 0);
-            const tax = subtotal * 0.1;
-            const total = subtotal + tax;
-
-            setOrderSummary({ ...orderSummary, subtotal, tax, total });
+            updateOrderSummary(updatedItems);
           }
         }
       ]
     );
   };
 
+  const handleAddItemClick = () => {
+    if (!customerId || !customer) {
+      Alert.alert(
+        'Customer Required',
+        'Please select a customer before adding products to the order.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    setShowAddItemModal(true);
+  };
+
   const handleSubmitOrder = async () => {
+    if (!customerId || !customer) {
+      Alert.alert('Error', 'Please select a customer before submitting the order.');
+      return;
+    }
+
+    if (processedItems.length === 0) {
+      Alert.alert('Error', 'Please add at least one item to the order.');
+      return;
+    }
+
     if (!orderSummary.allInStock) {
       Alert.alert(
         'Stock Warning',
@@ -516,26 +538,25 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
   const saveOrder = async () => {
     try {
-      // Generate order number
       const orderNumber = `ORD-${Date.now()}`;
+      const proposalNumber = `PROP-${Date.now()}`;
       
-      // Determine priority level based on delivery date and order value
       const deliveryDate = new Date(orderData.deliveryDate);
       const daysDiff = Math.ceil((deliveryDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
       const priorityLevel = daysDiff <= 1 ? 9 : daysDiff <= 3 ? 7 : orderSummary.total > 1000 ? 6 : 5;
 
-      // Save order to database
       const { data: order, error: orderError } = await supabase
         .from('orders')
         .insert({
           order_number: orderNumber,
+          proposal_number: proposalNumber,
           customer_id: customerId,
           sales_agent_id: salesAgentId,
-          natural_language_order: orderData.naturalLanguageOrder,
           delivery_date: orderData.deliveryDate.toISOString().split('T')[0],
           delivery_time: orderData.deliveryTime.toTimeString().split(' ')[0],
           payment_type: orderData.paymentType,
-          status: 'confirmed',
+          order_type: orderData.orderType,
+          status: 'draft',
           subtotal: orderSummary.subtotal,
           tax_amount: orderSummary.tax,
           total_amount: orderSummary.total,
@@ -547,7 +568,6 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
       if (orderError) throw orderError;
 
-      // Save order items
       const orderItems = processedItems.map(item => ({
         order_id: order.id,
         product_id: item.product_id,
@@ -569,37 +589,12 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
         .insert(orderItems);
 
       if (itemsError) throw itemsError;
-      
-      // Get warehouse operator suggestion
-      try {
-        const { suggestWarehouseOperator, createOrderAssignment } = await import('../../services/warehouseOperatorSuggestion');
-        const suggestion = await suggestWarehouseOperator(processedItems, deliveryDate, priorityLevel);
-        
-        if (suggestion) {
-          // Create order assignment with AI suggestion
-          await createOrderAssignment(order.id, suggestion);
-          console.log(`Order ${order.order_number} assigned suggested operator: ${suggestion.suggested_operator.operator_name} (${suggestion.suggestion_confidence}% confidence)`);
-        } else {
-          console.log(`No warehouse operator suggestion available for order ${order.order_number}`);
-        }
-      } catch (suggestionError) {
-        console.error('Error creating warehouse operator suggestion:', suggestionError);
-        // Don't fail the order if suggestion fails
-      }
 
-      // Update product quantities for in-stock items
-      for (const item of processedItems) {
-        if (item.product_id && item.in_stock) {
-          const newQuantity = (item.current_stock || 0) - item.quantity;
-          await supabase
-            .from('products')
-            .update({ quantity: newQuantity })
-            .eq('id', item.product_id);
-        }
-      }
+      // Update customer price history with better tracking
+      await updateCustomerPriceHistory(processedItems, order.id);
 
       setSavedOrderId(order.id);
-      setShowInvoice(true);
+      setShowProposal(true);
 
     } catch (error) {
       console.error('Error saving order:', error);
@@ -607,23 +602,94 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
     }
   };
 
-  const getConfidenceIcon = (confidence: string) => {
-    switch (confidence) {
-      case 'high': return 'checkmark-circle';
-      case 'medium': return 'alert-circle';
-      case 'low': return 'warning';
-      case 'no_match': return 'close-circle';
-      default: return 'help-circle';
-    }
-  };
+  const updateCustomerPriceHistory = async (items: ProcessedItem[], orderId: string) => {
+    try {
+      // Batch process all updates in a transaction
+      const updates = [];
+      const priceChangeLogs = [];
+      
+      for (const item of items) {
+        if (!item.product_id) continue;
 
-  const getConfidenceColor = (confidence: string) => {
-    switch (confidence) {
-      case 'high': return '#27AE60';
-      case 'medium': return '#F39C12';
-      case 'low': return '#E74C3C';
-      case 'no_match': return '#E74C3C';
-      default: return '#666';
+        const existingHistory = customerPriceHistory.get(item.product_id);
+        const originalPrice = item.matched_product?.price || item.unit_price;
+        
+        // Prepare price change log entry
+        priceChangeLogs.push({
+          customer_id: customerId,
+          product_id: item.product_id,
+          old_price: existingHistory?.last_price || null,
+          new_price: item.unit_price,
+          original_price: originalPrice,
+          price_difference_percentage: ((originalPrice - item.unit_price) / originalPrice * 100),
+          changed_by: salesAgentId,
+          order_id: orderId,
+          change_type: item.using_customer_price ? 'customer_price' : 'manual',
+          reason: item.using_customer_price ? 'Applied customer negotiated price' : 'Manual price adjustment'
+        });
+        
+        // Calculate validity period (90 days by default, can be configured)
+        const validUntil = new Date();
+        validUntil.setDate(validUntil.getDate() + 90);
+        
+        if (existingHistory) {
+          // Update existing record
+          updates.push({
+            customer_id: customerId,
+            product_id: item.product_id,
+            last_price: item.unit_price,
+            last_quantity: item.quantity,
+            last_unit: item.unit,
+            last_order_date: new Date().toISOString(),
+            times_ordered: existingHistory.times_ordered + 1,
+            total_quantity_ordered: (existingHistory.last_quantity * existingHistory.times_ordered) + item.quantity,
+            valid_until: validUntil.toISOString(),
+            original_price: originalPrice,
+            updated_at: new Date().toISOString()
+          });
+        } else {
+          // Insert new record
+          updates.push({
+            customer_id: customerId,
+            product_id: item.product_id,
+            last_price: item.unit_price,
+            last_quantity: item.quantity,
+            last_unit: item.unit,
+            last_order_date: new Date().toISOString(),
+            times_ordered: 1,
+            total_quantity_ordered: item.quantity,
+            valid_until: validUntil.toISOString(),
+            original_price: originalPrice
+          });
+        }
+      }
+
+      // Batch upsert price history
+      if (updates.length > 0) {
+        const { error: historyError } = await supabase
+          .from('customer_price_history')
+          .upsert(updates, { 
+            onConflict: 'customer_id,product_id',
+            ignoreDuplicates: false 
+          });
+        
+        if (historyError) {
+          console.error('Error updating price history:', historyError);
+        }
+      }
+      
+      // Insert price change logs
+      if (priceChangeLogs.length > 0) {
+        const { error: logError } = await supabase
+          .from('price_change_log')
+          .insert(priceChangeLogs);
+        
+        if (logError) {
+          console.error('Error logging price changes:', logError);
+        }
+      }
+    } catch (error) {
+      console.error('Error updating customer price history:', error);
     }
   };
 
@@ -631,6 +697,7 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
     switch (status) {
       case 'in_stock': return 'checkmark-circle';
       case 'out_of_stock': return 'close-circle';
+      case 'low_stock': return 'warning';
       case 'not_found': return 'help-circle-outline';
       default: return 'remove-circle-outline';
     }
@@ -640,6 +707,7 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
     switch (status) {
       case 'in_stock': return '#27AE60';
       case 'out_of_stock': return '#E74C3C';
+      case 'low_stock': return '#F39C12';
       case 'not_found': return '#999';
       default: return '#666';
     }
@@ -652,37 +720,20 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
           <View style={styles.processingCard}>
             <View style={styles.processingAnimation}>
               <ActivityIndicator size="large" color="#E74C3C" />
-              <View style={styles.processingDots}>
-                <View style={[styles.dot, styles.dot1]} />
-                <View style={[styles.dot, styles.dot2]} />
-                <View style={[styles.dot, styles.dot3]} />
-              </View>
             </View>
-            <Text style={styles.processingTitle}>Processing Order with AI</Text>
-            <Text style={styles.processingSubtext}>Matching products and checking inventory...</Text>
-            <View style={styles.processingSteps}>
-              <View style={styles.processingStep}>
-                <Ionicons name="sparkles" size={16} color="#E74C3C" />
-                <Text style={styles.processingStepText}>Analyzing order text</Text>
-              </View>
-              <View style={styles.processingStep}>
-                <Ionicons name="search" size={16} color="#E74C3C" />
-                <Text style={styles.processingStepText}>Matching products</Text>
-              </View>
-              <View style={styles.processingStep}>
-                <Ionicons name="cube-outline" size={16} color="#E74C3C" />
-                <Text style={styles.processingStepText}>Checking inventory</Text>
-              </View>
-            </View>
+            <Text style={styles.processingTitle}>Processing Order</Text>
+            <Text style={styles.processingSubtext}>
+              {customer ? `Loading prices for ${customer.name}...` : 'Applying customer prices and checking inventory...'}
+            </Text>
           </View>
         </View>
       </Modal>
     );
   }
 
-  if (showInvoice && savedOrderId) {
+  if (showProposal && savedOrderId) {
     return (
-      <InvoiceGenerator
+      <ProposalGenerator
         orderId={savedOrderId}
         customer={customer}
         items={processedItems}
@@ -703,7 +754,7 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>Review Order</Text>
-            <Text style={styles.headerSubtitle}>AI-Processed Results</Text>
+            <Text style={styles.headerSubtitle}>With Customer Pricing</Text>
           </View>
           <TouchableOpacity style={styles.headerButton}>
             <Ionicons name="help-circle-outline" size={24} color="#666" />
@@ -712,7 +763,7 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
           {/* Customer Info Card */}
-          {customer && (
+          {customer ? (
             <View style={styles.customerCard}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
@@ -738,9 +789,16 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                 </View>
                 <View style={styles.outstandingBalance}>
                   <Text style={styles.balanceLabel}>Outstanding Balance:</Text>
-                  <Text style={styles.balanceValue}>$0.00</Text>
+                  <Text style={styles.balanceValue}>${customer.outstanding_balance?.toFixed(2) || '0.00'}</Text>
                 </View>
               </View>
+            </View>
+          ) : (
+            <View style={styles.warningCard}>
+              <Ionicons name="warning" size={20} color="#F39C12" />
+              <Text style={styles.warningText}>
+                No customer selected. Please select a customer to continue.
+              </Text>
             </View>
           )}
 
@@ -783,57 +841,62 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                     {orderData.paymentType.charAt(0).toUpperCase() + orderData.paymentType.slice(1)}
                   </Text>
                 </View>
+                <View style={styles.deliveryItem}>
+                  <Text style={styles.deliveryLabel}>Order Type</Text>
+                  <Text style={styles.deliveryValue}>
+                    {orderData.orderType === 'pickup' ? 'Pick Up' : 
+                     orderData.orderType === 'phone' ? 'By Phone' : 'Card/Zelle'}
+                  </Text>
+                </View>
               </View>
             </View>
           </View>
 
-          {/* AI-Processed Order */}
+          {/* Order Items */}
           <View style={styles.itemsSection}>
             <View style={styles.itemsHeader}>
-              <Text style={styles.itemsTitle}>AI-Processed Order</Text>
+              <Text style={styles.itemsTitle}>Order Items</Text>
               <TouchableOpacity
                 style={styles.addButton}
-                onPress={() => setShowAddItemModal(true)}
+                onPress={handleAddItemClick}
               >
                 <Ionicons name="add-circle-outline" size={20} color="#E74C3C" />
-                <Text style={styles.addButtonText}>Add Manual Item</Text>
+                <Text style={styles.addButtonText}>Add Item</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Matching Summary */}
-            <View style={styles.matchingSummary}>
-              <Text style={styles.matchingSummaryTitle}>Matching Summary</Text>
-              <View style={styles.summaryStats}>
-                <View style={styles.summaryStatItem}>
-                  <Text style={styles.summaryStatLabel}>Total Items:</Text>
-                  <Text style={styles.summaryStatValue}>{processedItems.length}</Text>
-                </View>
-                <View style={styles.summaryStatItem}>
-                  <Text style={[styles.summaryStatLabel, { color: '#27AE60' }]}>High Confidence:</Text>
-                  <Text style={[styles.summaryStatValue, { color: '#27AE60' }]}>
-                    {processedItems.filter(i => i.confidence === 'high').length}
-                  </Text>
-                </View>
-                <View style={styles.summaryStatItem}>
-                  <Text style={[styles.summaryStatLabel, { color: '#F39C12' }]}>Medium Confidence:</Text>
-                  <Text style={[styles.summaryStatValue, { color: '#F39C12' }]}>
-                    {processedItems.filter(i => i.confidence === 'medium').length}
-                  </Text>
-                </View>
-                <View style={styles.summaryStatItem}>
-                  <Text style={[styles.summaryStatLabel, { color: '#E74C3C' }]}>Low Confidence:</Text>
-                  <Text style={[styles.summaryStatValue, { color: '#E74C3C' }]}>
-                    {processedItems.filter(i => i.confidence === 'low').length}
-                  </Text>
-                </View>
-                <View style={styles.summaryStatItem}>
-                  <Text style={[styles.summaryStatLabel, { color: '#E74C3C' }]}>No Match:</Text>
-                  <Text style={[styles.summaryStatValue, { color: '#E74C3C' }]}>
-                    {processedItems.filter(i => i.confidence === 'no_match').length}
-                  </Text>
+            {/* Items Summary */}
+            {processedItems.length > 0 && (
+              <View style={styles.matchingSummary}>
+                <Text style={styles.matchingSummaryTitle}>Order Summary</Text>
+                <View style={styles.summaryStats}>
+                  <View style={styles.summaryStatItem}>
+                    <Text style={styles.summaryStatLabel}>Total Items:</Text>
+                    <Text style={styles.summaryStatValue}>{processedItems.length}</Text>
+                  </View>
+                  <View style={styles.summaryStatItem}>
+                    <Text style={[styles.summaryStatLabel, { color: '#3498DB' }]}>Customer Prices:</Text>
+                    <Text style={[styles.summaryStatValue, { color: '#3498DB' }]}>
+                      {processedItems.filter(i => i.using_customer_price).length}
+                    </Text>
+                  </View>
+                  <View style={styles.summaryStatItem}>
+                    <Text style={[styles.summaryStatLabel, { color: '#27AE60' }]}>In Stock:</Text>
+                    <Text style={[styles.summaryStatValue, { color: '#27AE60' }]}>
+                      {processedItems.filter(i => i.in_stock).length}
+                    </Text>
+                  </View>
+                  {orderSummary.totalSavings > 0 && (
+                    <View style={styles.summaryStatItem}>
+                      <Text style={[styles.summaryStatLabel, { color: '#E74C3C' }]}>Total Saved:</Text>
+                      <Text style={[styles.summaryStatValue, { color: '#E74C3C' }]}>
+                        ${orderSummary.totalSavings.toFixed(2)}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               </View>
-            </View>
+            )}
 
             {processedItems.map((item, index) => {
               const isEditing = editingItems[index];
@@ -841,24 +904,20 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 
               return (
                 <View key={index} style={styles.itemCard}>
-                  {/* Item Header with Confidence and Stock Status */}
+                  {/* Item Header */}
                   <TouchableOpacity
                     style={styles.itemHeader}
                     onPress={() => setExpandedItem(expandedItem === index ? null : index)}
                   >
                     <View style={styles.itemHeaderLeft}>
-                      <View style={[styles.confidenceBadge, { backgroundColor: `${getConfidenceColor(item.confidence)}15` }]}>
-                        <Ionicons
-                          name={getConfidenceIcon(item.confidence)}
-                          size={16}
-                          color={getConfidenceColor(item.confidence)}
-                        />
-                        <Text style={[styles.confidenceText, { color: getConfidenceColor(item.confidence) }]}>
-                          {item.confidence === 'high' ? 'Matched' :
-                            item.confidence === 'medium' ? 'Partial' :
-                              item.confidence === 'no_match' ? 'Not Found' : 'Low Match'}
-                        </Text>
-                      </View>
+                      {item.using_customer_price && (
+                        <View style={styles.customerPriceBadge}>
+                          <Ionicons name="person" size={14} color="#3498DB" />
+                          <Text style={styles.customerPriceText}>
+                            {item.discount_percentage ? `${item.discount_percentage.toFixed(0)}% Off` : 'Customer Price'}
+                          </Text>
+                        </View>
+                      )}
                       <View style={[styles.stockBadge, { backgroundColor: `${getStockColor(item.stock_status || '')}15` }]}>
                         <Ionicons
                           name={getStockIcon(item.stock_status || '')}
@@ -867,7 +926,8 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                         />
                         <Text style={[styles.stockText, { color: getStockColor(item.stock_status || '') }]}>
                           {item.stock_status === 'in_stock' ? 'In Stock' :
-                            item.stock_status === 'out_of_stock' ? 'Out of Stock' : 'N/A'}
+                            item.stock_status === 'out_of_stock' ? 'Out of Stock' : 
+                            item.stock_status === 'low_stock' ? 'Low Stock' : 'N/A'}
                         </Text>
                       </View>
                     </View>
@@ -883,7 +943,6 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                     <View style={styles.itemMainInfo}>
                       <Text style={styles.itemProductName}>{currentItem.product_name}</Text>
                       {item.sku && <Text style={styles.itemSku}>SKU: {item.sku}</Text>}
-                      <Text style={styles.itemOriginal}>"{item.original_text}"</Text>
                     </View>
 
                     <View style={styles.itemQuantityPrice}>
@@ -949,6 +1008,26 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                           <Text style={styles.expandedValue}>{item.current_stock} units</Text>
                         </View>
                       )}
+                      {item.customer_price && (
+                        <View style={styles.expandedRow}>
+                          <Text style={styles.expandedLabel}>Customer's Last Price:</Text>
+                          <Text style={styles.expandedValue}>${item.customer_price.toFixed(2)}</Text>
+                        </View>
+                      )}
+                      {item.price_expires && (
+                        <View style={styles.expandedRow}>
+                          <Text style={styles.expandedLabel}>Price Valid Until:</Text>
+                          <Text style={styles.expandedValue}>
+                            {new Date(item.price_expires).toLocaleDateString()}
+                          </Text>
+                        </View>
+                      )}
+                      {item.matched_product && (
+                        <View style={styles.expandedRow}>
+                          <Text style={styles.expandedLabel}>Regular Price:</Text>
+                          <Text style={styles.expandedValue}>${item.matched_product.price.toFixed(2)}</Text>
+                        </View>
+                      )}
                       <View style={styles.itemActions}>
                         {isEditing ? (
                           <>
@@ -979,6 +1058,15 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                               <Ionicons name="create-outline" size={16} color="#E74C3C" />
                               <Text style={styles.editButtonText}>Edit</Text>
                             </TouchableOpacity>
+                            {item.product_id && (
+                              <TouchableOpacity
+                                style={[styles.actionButton, styles.historyButton]}
+                                onPress={() => fetchProductPriceHistory(item.product_id!, item.product_name)}
+                              >
+                                <Ionicons name="time-outline" size={16} color="#3498DB" />
+                                <Text style={styles.historyButtonText}>History</Text>
+                              </TouchableOpacity>
+                            )}
                             <TouchableOpacity
                               style={[styles.actionButton, styles.deleteButton]}
                               onPress={() => removeItem(index)}
@@ -994,6 +1082,14 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                 </View>
               );
             })}
+
+            {processedItems.length === 0 && (
+              <View style={styles.emptyState}>
+                <Ionicons name="cart-outline" size={48} color="#DDD" />
+                <Text style={styles.emptyStateText}>No items in order</Text>
+                <Text style={styles.emptyStateSubtext}>Add products to get started</Text>
+              </View>
+            )}
           </View>
 
           {/* Order Summary */}
@@ -1004,6 +1100,14 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                 <Text style={styles.summaryLabel}>Subtotal</Text>
                 <Text style={styles.summaryValue}>${orderSummary.subtotal.toFixed(2)}</Text>
               </View>
+              {orderSummary.totalSavings > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: '#27AE60' }]}>Customer Savings</Text>
+                  <Text style={[styles.summaryValue, { color: '#27AE60' }]}>
+                    -${orderSummary.totalSavings.toFixed(2)}
+                  </Text>
+                </View>
+              )}
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Tax (10%)</Text>
                 <Text style={styles.summaryValue}>${orderSummary.tax.toFixed(2)}</Text>
@@ -1017,7 +1121,7 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
           </View>
 
           {/* Stock Warning */}
-          {!orderSummary.allInStock && (
+          {!orderSummary.allInStock && processedItems.length > 0 && (
             <View style={styles.warningCard}>
               <Ionicons name="warning" size={20} color="#F39C12" />
               <Text style={styles.warningText}>
@@ -1035,22 +1139,13 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
           <TouchableOpacity
             style={[
               styles.primaryButton,
-              !orderSummary.allInStock && styles.primaryButtonDisabled
+              (!customerId || processedItems.length === 0) && styles.primaryButtonDisabled
             ]}
-            onPress={orderSummary.allInStock ? handleSubmitOrder : undefined}
-            disabled={!orderSummary.allInStock}
+            onPress={handleSubmitOrder}
+            disabled={!customerId || processedItems.length === 0}
           >
-            <Ionicons
-              name="checkmark-circle"
-              size={20}
-              color={orderSummary.allInStock ? "#FFFFFF" : "#CCCCCC"}
-            />
-            <Text style={[
-              styles.primaryButtonText,
-              !orderSummary.allInStock && styles.primaryButtonTextDisabled
-            ]}>
-              Submit Sales Order
-            </Text>
+            <Ionicons name="document-text-outline" size={20} color="#FFFFFF" />
+            <Text style={styles.primaryButtonText}>Create Proposal</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1074,9 +1169,8 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
               </TouchableOpacity>
             </View>
 
-            {/* Product Search */}
             <View style={styles.searchContainer}>
-              <Ionicons name="search-outline" size={20} color="#666" />
+              <Ionicons name="search-outline" size={20} color="#999" />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search by product name, SKU, or barcode..."
@@ -1091,31 +1185,51 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
               )}
             </View>
 
-            {/* Search Results */}
             <ScrollView style={styles.searchResults}>
               {searchQuery.length > 0 ? (
                 filteredProducts.length > 0 ? (
-                  filteredProducts.map((product) => (
-                    <TouchableOpacity
-                      key={product.id}
-                      style={styles.productItem}
-                      onPress={() => addProductManually(product)}
-                    >
-                      <View style={styles.productItemInfo}>
-                        <Text style={styles.productItemName}>{product.product_name}</Text>
-                        <View style={styles.productItemMeta}>
-                          <Text style={styles.productItemSku}>SKU: {product.sku || 'N/A'}</Text>
-                          <Text style={styles.productItemStock}>
-                            Stock: {product.quantity} {product.unit}
-                          </Text>
-                          <Text style={styles.productItemPrice}>${product.price.toFixed(2)}</Text>
+                  filteredProducts.map((product) => {
+                    const customerPrice = customerPriceHistory.get(product.id);
+                    const isValidPrice = customerPrice && (!customerPrice.valid_until || new Date(customerPrice.valid_until) > new Date());
+                    
+                    return (
+                      <TouchableOpacity
+                        key={product.id}
+                        style={styles.productItem}
+                        onPress={() => addProductManually(product)}
+                      >
+                        <View style={styles.productItemInfo}>
+                          <Text style={styles.productItemName}>{product.product_name}</Text>
+                          <View style={styles.productItemMeta}>
+                            <Text style={styles.productItemSku}>SKU: {product.sku || 'N/A'}</Text>
+                            <Text style={styles.productItemStock}>
+                              Stock: {product.quantity} {product.unit}
+                            </Text>
+                            {isValidPrice ? (
+                              <View style={styles.priceComparison}>
+                                <Text style={styles.customerPriceLabel}>
+                                  Customer: ${customerPrice.last_price.toFixed(2)}
+                                </Text>
+                                <Text style={styles.regularPriceLabel}>
+                                  Regular: ${product.price.toFixed(2)}
+                                </Text>
+                                {customerPrice.valid_until && (
+                                  <Text style={styles.priceExpiryLabel}>
+                                    Valid until: {new Date(customerPrice.valid_until).toLocaleDateString()}
+                                  </Text>
+                                )}
+                              </View>
+                            ) : (
+                              <Text style={styles.productItemPrice}>${product.price.toFixed(2)}</Text>
+                            )}
+                          </View>
                         </View>
-                      </View>
-                      <View style={styles.productItemAction}>
-                        <Ionicons name="add-circle" size={28} color="#E74C3C" />
-                      </View>
-                    </TouchableOpacity>
-                  ))
+                        <View style={styles.productItemAction}>
+                          <Ionicons name="add-circle" size={28} color="#E74C3C" />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
                 ) : (
                   <View style={styles.noResults}>
                     <Ionicons name="search-outline" size={48} color="#DDD" />
@@ -1127,7 +1241,42 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
                 <View style={styles.searchPrompt}>
                   <Ionicons name="cube-outline" size={48} color="#DDD" />
                   <Text style={styles.searchPromptText}>Start typing to search products</Text>
-                  <Text style={styles.searchPromptSubtext}>Search by name, SKU, or barcode</Text>
+                  <Text style={styles.searchPromptSubtext}>Customer prices will be applied automatically</Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Price History Modal */}
+      <Modal
+        visible={showPriceHistory}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowPriceHistory(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.historyModalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Price History: {selectedProductName}</Text>
+              <TouchableOpacity onPress={() => setShowPriceHistory(false)}>
+                <Ionicons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.historyList}>
+              {selectedProductHistory.length > 0 ? (
+                selectedProductHistory.map((history, index) => (
+                  <View key={index} style={styles.historyItem}>
+                    <View style={styles.historyItemLeft}>
+                      <Text style={styles.historyPrice}>${history.price.toFixed(2)}</Text>
+                      <Text style={styles.historyDate}>{history.date}</Text>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.noHistory}>
+                  <Text style={styles.noHistoryText}>No price history available</Text>
                 </View>
               )}
             </ScrollView>
@@ -1139,7 +1288,104 @@ export default function OrderProcessor({ orderData, customerId, salesAgentId, on
 }
 
 const styles = StyleSheet.create({
-  // All the same styles from the original file...
+  // All existing styles plus new ones
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 12,
+  },
+  emptyStateText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#999',
+    marginTop: 16,
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    color: '#BBB',
+    marginTop: 4,
+  },
+  customerPriceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#3498DB15',
+  },
+  customerPriceText: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginLeft: 4,
+    color: '#3498DB',
+  },
+  priceComparison: {
+    flexDirection: 'column',
+    gap: 2,
+  },
+  customerPriceLabel: {
+    fontSize: 13,
+    color: '#3498DB',
+    fontWeight: '600',
+  },
+  regularPriceLabel: {
+    fontSize: 12,
+    color: '#999',
+    textDecorationLine: 'line-through',
+  },
+  priceExpiryLabel: {
+    fontSize: 11,
+    color: '#F39C12',
+    fontStyle: 'italic',
+  },
+  historyButton: {
+    backgroundColor: '#E8F4FD',
+    borderColor: '#3498DB',
+  },
+  historyButtonText: {
+    color: '#3498DB',
+    fontSize: 14,
+    fontWeight: '500',
+    marginLeft: 4,
+  },
+  historyModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '60%',
+  },
+  historyList: {
+    padding: 20,
+  },
+  historyItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  historyItemLeft: {
+    flex: 1,
+  },
+  historyPrice: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
+  historyDate: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 2,
+  },
+  noHistory: {
+    alignItems: 'center',
+    padding: 40,
+  },
+  noHistoryText: {
+    fontSize: 14,
+    color: '#999',
+  },
   processingContainer: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -1159,27 +1405,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     alignItems: 'center',
   },
-  processingDots: {
-    flexDirection: 'row',
-    marginTop: 10,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#E74C3C',
-    marginHorizontal: 4,
-    opacity: 0.3,
-  },
-  dot1: {
-    opacity: 1,
-  },
-  dot2: {
-    opacity: 0.6,
-  },
-  dot3: {
-    opacity: 0.3,
-  },
   processingTitle: {
     fontSize: 20,
     fontWeight: '600',
@@ -1191,19 +1416,6 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     marginBottom: 20,
-  },
-  processingSteps: {
-    width: '100%',
-  },
-  processingStep: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  processingStepText: {
-    fontSize: 14,
-    color: '#666',
-    marginLeft: 10,
   },
   container: {
     flex: 1,
@@ -1247,6 +1459,7 @@ const styles = StyleSheet.create({
   customerCard: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 15,
+    marginTop: 15,
     marginBottom: 15,
     borderRadius: 12,
     padding: 20,
@@ -1434,18 +1647,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  confidenceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  confidenceText: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginLeft: 4,
-  },
   stockBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1477,11 +1678,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     marginBottom: 4,
-  },
-  itemOriginal: {
-    fontSize: 13,
-    color: '#666',
-    fontStyle: 'italic',
   },
   itemQuantityPrice: {
     alignItems: 'flex-end',
@@ -1715,9 +1911,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#CCCCCC',
     opacity: 0.6,
   },
-  primaryButtonTextDisabled: {
-    color: '#999999',
-  },
   stockWarning: {
     marginTop: 8,
     padding: 8,
@@ -1739,8 +1932,6 @@ const styles = StyleSheet.create({
     color: '#27AE60',
     fontWeight: '500',
   },
-
-  // Add Item Modal Styles
   modalContainer: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -1855,4 +2046,4 @@ const styles = StyleSheet.create({
     color: '#BBB',
     marginTop: 8,
   },
-});
+})

@@ -1,4 +1,4 @@
-// src/components/sales/PastOrders.tsx - Fixed foreign key reference
+// src/components/sales/PastOrders.tsx - Fixed to show admin manager name
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useEffect, useState } from 'react';
@@ -37,11 +37,9 @@ interface Order {
   total_amount: number;
   created_at: string;
   items?: OrderItem[];
-  warehouse_manager_id?: string;
-  warehouse_manager?: {
-    full_name: string;
-    email: string;
-  };
+  admin_manager_id?: string;
+  admin_manager_name?: string;
+  admin_manager_email?: string;
   cancellation_reason?: string;
   cancelled_at?: string;
   confirmed_at?: string;
@@ -86,7 +84,7 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
     applyFilters();
   }, [orders, searchQuery, filterStatus, startDate, endDate]);
 
-  const fetchOrders = async (refresh = false) => {
+const fetchOrders = async (refresh = false) => {
     if (refresh) {
       setIsRefreshing(true);
       setPage(0);
@@ -95,9 +93,9 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
     }
 
     try {
-      // FIXED: Removed warehouse_manager join to avoid foreign key issues
+      // Use the view to get admin manager details
       const { data, error } = await supabase
-        .from('orders')
+        .from('orders_with_admin_profile')
         .select(`
           *,
           customer:customers(name, email, phone),
@@ -126,9 +124,8 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
     const nextPage = page + 1;
     
     try {
-      // FIXED: Removed warehouse_manager join to avoid foreign key issues
       const { data, error } = await supabase
-        .from('orders')
+        .from('orders_with_admin_profile')
         .select(`
           *,
           customer:customers(name, email, phone),
@@ -230,7 +227,7 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
     setEndDate(null);
   };
 
-  const renderOrder = ({ item }: { item: Order }) => (
+   const renderOrder = ({ item }: { item: Order }) => (
     <TouchableOpacity
       style={styles.orderCard}
       onPress={() => {
@@ -477,7 +474,7 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
                   </View>
                 </View>
 
-                {/* Status History */}
+                {/* Status History - Updated Section */}
                 {(selectedOrder.status === 'confirmed' || selectedOrder.status === 'cancelled') && (
                   <View style={styles.detailSection}>
                     <Text style={styles.detailSectionTitle}>Status History</Text>
@@ -486,8 +483,13 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
                         <Ionicons name="checkmark-circle" size={20} color="#27AE60" />
                         <View style={styles.statusHistoryInfo}>
                           <Text style={styles.statusHistoryText}>
-                            Confirmed by {selectedOrder.warehouse_manager?.full_name || 'Warehouse Manager'}
+                            Confirmed by {selectedOrder.admin_manager_name || 'Admin Manager'}
                           </Text>
+                          {selectedOrder.admin_manager_email && (
+                            <Text style={styles.statusHistoryEmail}>
+                              {selectedOrder.admin_manager_email}
+                            </Text>
+                          )}
                           {selectedOrder.confirmed_at && (
                             <Text style={styles.statusHistoryDate}>
                               {new Date(selectedOrder.confirmed_at).toLocaleString()}
@@ -501,8 +503,13 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
                         <Ionicons name="close-circle" size={20} color="#E74C3C" />
                         <View style={styles.statusHistoryInfo}>
                           <Text style={styles.statusHistoryText}>
-                            Cancelled by {selectedOrder.warehouse_manager?.full_name || 'Warehouse Manager'}
+                            Cancelled by {selectedOrder.admin_manager_name || 'Admin Manager'}
                           </Text>
+                          {selectedOrder.admin_manager_email && (
+                            <Text style={styles.statusHistoryEmail}>
+                              {selectedOrder.admin_manager_email}
+                            </Text>
+                          )}
                           {selectedOrder.cancellation_reason && (
                             <Text style={styles.cancellationReason}>
                               Reason: {selectedOrder.cancellation_reason}
@@ -585,10 +592,16 @@ export default function PastOrders({ salesAgentId }: PastOrdersProps) {
   );
 }
 
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+    statusHistoryEmail: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
   },
   searchSection: {
     flexDirection: 'row',
