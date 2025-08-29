@@ -1,8 +1,4 @@
-//here is the handling of logining in the user to the app and 
-//redirecting them to their assigned screen if login is successful. also the styling of 
-//the login screen is done here.
-
-// app/(auth)/login.tsx
+// app/(auth)/login.tsx - Fixed with proper routing to dashboard
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
@@ -60,19 +56,27 @@ const LoginScreen: React.FC = () => {
           email: data.user.email,
           role: 'sales_agent'
         });
-        router.replace('/(sales)' as any);
+        // Navigate to sales dashboard
+        router.replace('/(sales)');
       } else {
         // Navigate based on role
         switch (profile.role) {
           case 'admin':
-            router.replace('/(admin)' as any);
+            // Admin dashboard (not implemented yet)
+            router.replace('/(sales)'); // Temporarily redirect to sales
             break;
           case 'warehouse_operator':
-            router.replace('/(warehouse)' as any);
+            // Warehouse dashboard (not implemented yet)
+            router.replace('/(sales)'); // Temporarily redirect to sales
             break;
           case 'sales_agent':
+          case 'sales_manager':
+            // Both sales roles go to the same dashboard
+            router.replace('/(sales)');
+            break;
           default:
-            router.replace('/(sales)' as any);
+            // Default to sales dashboard for any other role
+            router.replace('/(sales)');
             break;
         }
       }

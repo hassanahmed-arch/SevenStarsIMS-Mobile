@@ -2,14 +2,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Dimensions,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Dimensions,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
 import { supabase } from '../../lib/supabase';
@@ -62,7 +62,13 @@ export default function SalesAnalytics({ salesAgentId }: SalesAnalyticsProps) {
   const [totalSales, setTotalSales] = useState(0);
 
   useEffect(() => {
-    fetchAnalytics();
+    // Only fetch if we have a valid salesAgentId (not undefined or "undefined")
+    if (salesAgentId && salesAgentId !== 'undefined') {
+      fetchAnalytics();
+    } else {
+      console.error('Invalid salesAgentId:', salesAgentId);
+      setIsLoading(false);
+    }
   }, [salesAgentId, selectedPeriod]);
 
   const fetchAnalytics = async (refresh = false) => {
