@@ -29,7 +29,7 @@ interface CustomerForm {
   zip_code: string;
   country: string;
   customer_type: 'Standard' | 'Gold' | 'Platinum';
-  credit_limit: string;
+  credit_limit: string; // retained in type for minimal diff (no longer used to save)
   tax_id: string;
   bill_to: string;
   bill_to_2: string;
@@ -54,7 +54,7 @@ export default function NewCustomerScreen() {
     zip_code: '',
     country: 'USA',
     customer_type: 'Standard',
-    credit_limit: '10000',
+    credit_limit: '10000', // unused for saving; derived instead
     tax_id: '',
     bill_to: '',
     bill_to_2: '',
@@ -103,6 +103,20 @@ export default function NewCustomerScreen() {
     return Object.keys(newErrors).length === 0;
   };
 
+  // Map customer_type to credit limit and platinum flag
+  const getTierInfo = (tier: CustomerForm['customer_type']) => {
+    switch (tier) {
+      case 'Standard':
+        return { credit_limit: 10000, is_platinum: false };
+      case 'Gold':
+        return { credit_limit: 15000, is_platinum: false };
+      case 'Platinum':
+        return { credit_limit: 50000, is_platinum: true };
+      default:
+        return { credit_limit: 10000, is_platinum: false };
+    }
+  }; // React state updates and derived values pattern per hooks usage. [6][11]
+
   const handleSave = async () => {
     if (!validateForm()) {
       Alert.alert('Validation Error', 'Please fill in all required fields');
@@ -114,6 +128,8 @@ export default function NewCustomerScreen() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('No authenticated user');
+
+      const { credit_limit, is_platinum } = getTierInfo(form.customer_type);
 
       // Prepare customer data
       const customerData = {
@@ -128,7 +144,7 @@ export default function NewCustomerScreen() {
         zip_code: form.zip_code.trim(),
         country: form.country,
         customer_type: form.customer_type,
-        credit_limit: parseFloat(form.credit_limit) || 10000,
+        credit_limit, // derived from tier
         outstanding_balance: 0,
         Bill_to: sameAsBilling ? form.address : form.bill_to,
         Bill_to_2: sameAsBilling ? form.address_2 : form.bill_to_2,
@@ -137,6 +153,7 @@ export default function NewCustomerScreen() {
         Ship_to_2: form.ship_to_2 || form.address_2,
         Ship_to_3: form.ship_to_3 || form.address_3,
         out_of_state: form.out_of_state,
+        is_platinum, // boolean column as requested
         is_active: true,
         created_by: user.id,
       };
@@ -145,7 +162,7 @@ export default function NewCustomerScreen() {
         .from('customers')
         .insert(customerData)
         .select()
-        .single();
+        .single(); // return inserted row if RLS allows select [2][4][7]
 
       if (error) throw error;
 
@@ -156,7 +173,6 @@ export default function NewCustomerScreen() {
           {
             text: 'Create Order',
             onPress: () => {
-              // Set the new customer in order flow context
               router.replace('/(sales)/new-order/select-customer' as any);
             },
           },
@@ -177,11 +193,10 @@ export default function NewCustomerScreen() {
   const CustomerTypeButton = ({ 
     type, 
     label, 
-    description 
   }: { 
     type: CustomerForm['customer_type']; 
     label: string;
-    description: string;
+   
   }) => (
     <TouchableOpacity
       style={[
@@ -201,7 +216,7 @@ export default function NewCustomerScreen() {
           <Ionicons name="checkmark-circle" size={20} color="#E74C3C" />
         )}
       </View>
-      <Text style={styles.tierDescription}>{description}</Text>
+     
     </TouchableOpacity>
   );
 
@@ -214,7 +229,7 @@ export default function NewCustomerScreen() {
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <Ionicons name="close" size={24} color="#333" />
+            <Ionicons name="close" size={24} color="#ffffffff" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>New Customer</Text>
           <TouchableOpacity 
@@ -287,35 +302,20 @@ export default function NewCustomerScreen() {
               <CustomerTypeButton 
                 type="Standard" 
                 label="Standard"
-                description="Credit limit applies"
+                
               />
               <CustomerTypeButton 
                 type="Gold" 
                 label="Gold"
-                description="Higher credit limit"
+                
               />
               <CustomerTypeButton 
                 type="Platinum" 
                 label="Platinum"
-                description="No credit limit"
+                
               />
             </View>
-
-            {form.customer_type !== 'Platinum' && (
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Credit Limit</Text>
-                <View style={styles.creditInputContainer}>
-                  <Text style={styles.dollarSign}>$</Text>
-                  <TextInput
-                    style={styles.creditInput}
-                    placeholder="10000"
-                    value={form.credit_limit}
-                    onChangeText={(text) => setForm(prev => ({ ...prev, credit_limit: text }))}
-                    keyboardType="numeric"
-                  />
-                </View>
-              </View>
-            )}
+            {/* Credit limit input removed; now derived from tier */}
           </View>
 
           {/* Primary Address */}
@@ -516,11 +516,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#FFF',
+    backgroundColor: '#000000ff',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    borderBottomColor: '#000000ff',
   },
   backButton: {
     padding: 4,
@@ -528,7 +528,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#333',
+    color: '#ffffffff',
   },
   saveButton: {
     padding: 4,

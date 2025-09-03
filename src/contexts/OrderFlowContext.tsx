@@ -28,6 +28,15 @@ interface OrderData {
   poNumber?: string;
   notes?: string;
   specialHandlingNotes?: string;
+  proposalId?: string; // ADD THIS for tracking proposal conversions
+  proposalNumber?: string; // ADD THIS for reference
+}
+
+interface ProposalData {
+  id: string;
+  proposalNumber: string;
+  items: any[];
+  customer: Customer;
 }
 
 interface OrderFlowContextType {
@@ -46,7 +55,10 @@ interface OrderFlowContextType {
   // Flow type
   flowType: 'order' | 'proposal';
   setFlowType: (type: 'order' | 'proposal') => void;
-  
+
+    // Proposal conversion support
+  proposalToConvert: ProposalData | null;
+  setProposalToConvert: (proposal: ProposalData | null) => void;
   // Reset flow
   resetFlow: () => void;
   
@@ -61,6 +73,17 @@ export function OrderFlowProvider({ children }: { children: React.ReactNode }) {
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [flowType, setFlowType] = useState<'order' | 'proposal'>('order');
+  const [proposalToConvert, setProposalToConvert] = useState<ProposalData | null>(null);
+
+  // Load persisted state on mount
+  useEffect(() => {
+    loadPersistedState();
+  }, []);
+
+  // Save state whenever it changes
+  useEffect(() => {
+    saveState();
+  }, [customer, orderData, currentStep, flowType, proposalToConvert]);
 
   // Load persisted state on mount
   useEffect(() => {
@@ -81,19 +104,21 @@ export function OrderFlowProvider({ children }: { children: React.ReactNode }) {
         setOrderData(parsed.orderData);
         setCurrentStep(parsed.currentStep || 1);
         setFlowType(parsed.flowType || 'order');
+        setProposalToConvert(parsed.proposalToConvert || null);
       }
     } catch (error) {
       console.error('Error loading order flow state:', error);
     }
   };
 
-  const saveState = async () => {
+ const saveState = async () => {
     try {
       const state = {
         customer,
         orderData,
         currentStep,
         flowType,
+        proposalToConvert,
       };
       await AsyncStorage.setItem(ORDER_FLOW_STORAGE_KEY, JSON.stringify(state));
     } catch (error) {
@@ -101,11 +126,12 @@ export function OrderFlowProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const resetFlow = async () => {
+ const resetFlow = async () => {
     setCurrentStep(1);
     setCustomer(null);
     setOrderData(null);
     setFlowType('order');
+    setProposalToConvert(null);
     try {
       await AsyncStorage.removeItem(ORDER_FLOW_STORAGE_KEY);
     } catch (error) {
@@ -139,6 +165,8 @@ export function OrderFlowProvider({ children }: { children: React.ReactNode }) {
         setOrderData,
         flowType,
         setFlowType,
+        proposalToConvert,
+        setProposalToConvert,
         resetFlow,
         canProceedToStep,
       }}

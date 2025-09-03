@@ -1,7 +1,7 @@
-// app/(sales)/products.tsx - Product Selection Screen
+// app/(sales)/products.tsx - Updated with Database Search
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -46,21 +46,25 @@ interface FilterState {
 }
 
 export default function ProductsScreen() {
-  const { addToCart, cartCount, isInCart, getItemQuantity } = useCart();
-  const { customer } = useOrderFlow();
-  
+  const { addToCart, cartCount, cartItems, isInCart, getItemQuantity, clearCart } = useCart();
+  const { customer, flowType } = useOrderFlow();
+
   const [products, setProducts] = useState<Product[]>([]);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>(['All']);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedUnit, setSelectedUnit] = useState<'Item' | 'Case' | 'Pallet'>('Item');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [quickAddQuantity, setQuickAddQuantity] = useState('1');
   const [customPrice, setCustomPrice] = useState('');
   const [customerPrices, setCustomerPrices] = useState<Map<string, number>>(new Map());
+  const [reservedQuantities, setReservedQuantities] = useState<Map<string, number>>(new Map());
+  const [cartTotal, setCartTotal] = useState(0);
+  const [isSearching, setIsSearching] = useState(false);
   
   const [filters, setFilters] = useState<FilterState>({
     category: 'All',
@@ -72,40 +76,172 @@ export default function ProductsScreen() {
   const [page, setPage] = useState(0);
   const ITEMS_PER_PAGE = 20;
 
-  useEffect(() => {
-    fetchProducts();
-    fetchCategories();
-    if (customer) {
-      fetchCustomerPrices();
+  // Define applyFiltersToProducts as a useCallback to avoid recreation on every render
+  const applyFiltersToProducts = useCallback((productsToFilter: Product[]) => {
+    let filtered = [...productsToFilter];
+
+    // Category filter
+    if (filters.category !== 'All') {
+      filtered = filtered.filter(product => product.category === filters.category);
     }
-  }, [customer]);
 
-  useEffect(() => {
-    applyFilters();
-  }, [products, searchQuery, filters]);
+    // Price range filter
+    switch (filters.priceRange) {
+      case 'under_10':
+        filtered = filtered.filter(product => product.price < 10);
+        break;
+      case '10_50':
+        filtered = filtered.filter(product => product.price >= 10 && product.price <= 50);
+        break;
+      case '50_100':
+        filtered = filtered.filter(product => product.price > 50 && product.price <= 100);
+        break;
+      case 'over_100':
+        filtered = filtered.filter(product => product.price > 100);
+        break;
+    }
 
-  const fetchProducts = async (refresh = false) => {
+    setFilteredProducts(filtered);
+  }, [filters]);
+
+  const fetchProducts = async (refresh = false, searchTerm?: string) => {
     if (refresh) setIsRefreshing(true);
-    else setIsLoading(true);
+    else if (!searchTerm) setIsLoading(true);
 
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('products')
         .select('*')
-        .eq('is_active', true)
-        .order('product_name', { ascending: true })
-        .range(0, 100); // Load first 100 products
+        .eq('is_active', true);
+
+      // If there's a search term, search in the database
+      if (searchTerm && searchTerm.trim()) {
+        const searchLower = searchTerm.trim().toLowerCase();
+        
+        // Use OR conditions to search across multiple fields
+        query = query.or(
+          `product_name.ilike.%${searchLower}%,` +
+          `sku.ilike.%${searchLower}%,` +
+          `description.ilike.%${searchLower}%,` +
+          `category.ilike.%${searchLower}%`
+        );
+        
+        // Don't limit search results
+        query = query.order('product_name', { ascending: true });
+      } else {
+        // When not searching, get more products but with a limit
+        query = query.order('product_name', { ascending: true }).limit(500);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
       setProducts(data || []);
+      
+      // When searching, directly set filtered products
+      if (searchTerm) {
+        setFilteredProducts(data || []);
+      } else {
+        // When not searching, apply filters
+        applyFiltersToProducts(data || []);
+      }
     } catch (error) {
       console.error('Error fetching products:', error);
       Alert.alert('Error', 'Failed to load products');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+      setIsSearching(false);
     }
+  };
+
+  useEffect(() => {
+    // Initial load without search
+    fetchProducts();
+    fetchCategories();
+    fetchReservedQuantities();
+    if (customer) {
+      fetchCustomerPrices();
+    }
+  }, [customer]);
+
+  // Apply filters when products or filters change (but not when searching)
+  useEffect(() => {
+    if (!searchQuery || !searchQuery.trim()) {
+      applyFiltersToProducts(products);
+    }
+  }, [products, filters, applyFiltersToProducts]);
+
+  // Implement debounced search
+  useEffect(() => {
+    let timeout: number;
+    
+    if (searchQuery.trim()) {
+      setIsSearching(true);
+      timeout = setTimeout(() => {
+        fetchProducts(false, searchQuery);
+      }, 300); // 300ms delay
+    } else if (searchQuery === '') {
+      // If search is cleared, fetch all products immediately
+      fetchProducts();
+    }
+
+    // Cleanup function
+    return () => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    };
+  }, [searchQuery]);
+
+  // Calculate cart total whenever cart items change
+  useEffect(() => {
+    calculateCartTotal();
+  }, [cartItems, customerPrices, products]);
+
+  const calculateCartTotal = async () => {
+    if (!cartItems || cartItems.length === 0) {
+      setCartTotal(0);
+      return;
+    }
+
+    let total = 0;
+    
+    // If we have products loaded, use them for price calculation
+    if (products.length > 0) {
+      cartItems.forEach(cartItem => {
+        const product = products.find(p => p.id === cartItem.product_id);
+        if (product) {
+          // Use custom price if set, otherwise customer price history, otherwise product price
+          const price = cartItem.custom_price || customerPrices.get(cartItem.product_id) || product.price;
+          total += cartItem.quantity * price;
+        }
+      });
+    } else {
+      // Fallback: fetch product prices if products aren't loaded yet
+      try {
+        const productIds = cartItems.map(item => item.product_id);
+        const { data: productData } = await supabase
+          .from('products')
+          .select('id, price')
+          .in('id', productIds);
+        
+        if (productData) {
+          cartItems.forEach(cartItem => {
+            const product = productData.find(p => p.id === cartItem.product_id);
+            if (product) {
+              const price = cartItem.custom_price || customerPrices.get(cartItem.product_id) || product.price;
+              total += cartItem.quantity * price;
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error calculating cart total:', error);
+      }
+    }
+    
+    setCartTotal(total);
   };
 
   const fetchCategories = async () => {
@@ -121,6 +257,29 @@ export default function ProductsScreen() {
       setCategories(uniqueCategories);
     } catch (error) {
       console.error('Error fetching categories:', error);
+    }
+  };
+
+  const fetchReservedQuantities = async () => {
+    try {
+      const { data: reservations, error } = await supabase
+        .from('reserved_inventory')
+        .select('product_id, quantity')
+        .eq('released', false)
+        .neq('reserved_for', 'Cart Reservation')
+        .gte('expires_at', new Date().toISOString());
+
+      if (error) throw error;
+
+      const reserved = new Map<string, number>();
+      reservations?.forEach(item => {
+        const current = reserved.get(item.product_id) || 0;
+        reserved.set(item.product_id, current + item.quantity);
+      });
+
+      setReservedQuantities(reserved);
+    } catch (error) {
+      console.error('Error fetching reserved quantities:', error);
     }
   };
 
@@ -145,126 +304,109 @@ export default function ProductsScreen() {
     }
   };
 
-  const applyFilters = () => {
-    let filtered = [...products];
-
-    // Search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(product => 
-        product.product_name.toLowerCase().includes(query) ||
-        product.sku?.toLowerCase().includes(query) ||
-        product.description?.toLowerCase().includes(query)
-      );
-    }
-
-    // Category filter
-    if (filters.category !== 'All') {
-      filtered = filtered.filter(product => product.category === filters.category);
-    }
-
-    // Stock level filter
-    switch (filters.stockLevel) {
-      case 'in_stock':
-        filtered = filtered.filter(product => product.quantity > product.min_stock_level);
-        break;
-      case 'low_stock':
-        filtered = filtered.filter(product => 
-          product.quantity > 0 && product.quantity <= product.min_stock_level
-        );
-        break;
-      case 'out_of_stock':
-        filtered = filtered.filter(product => product.quantity === 0);
-        break;
-    }
-
-    // Price range filter
-    switch (filters.priceRange) {
-      case 'under_10':
-        filtered = filtered.filter(product => product.price < 10);
-        break;
-      case '10_50':
-        filtered = filtered.filter(product => product.price >= 10 && product.price <= 50);
-        break;
-      case '50_100':
-        filtered = filtered.filter(product => product.price > 50 && product.price <= 100);
-        break;
-      case 'over_100':
-        filtered = filtered.filter(product => product.price > 100);
-        break;
-    }
-
-    setFilteredProducts(filtered);
-  };
-
   const getAvailableQuantity = (product: Product): number => {
-    // For now, just return the actual quantity
-    // In production, this would calculate: actual - reserved
-    return product.quantity;
+    const reserved = reservedQuantities.get(product.id) || 0;
+    const available = Math.max(0, product.quantity - reserved);
+    return available;
   };
 
   const getStockStatus = (product: Product) => {
     const available = getAvailableQuantity(product);
-    if (available === 0) {
-      return { text: 'Out of Stock', color: '#E74C3C' };
-    } else if (available <= product.min_stock_level) {
-      return { text: `Low Stock: ${available}`, color: '#F39C12' };
-    } else {
-      return { text: `Stock: ${available}`, color: '#27AE60' };
+    if(flowType === 'order') {
+      if (available === 0) {
+        return { text: 'Out of Stock', color: '#E74C3C' };
+      } else if (available <= product.min_stock_level) {
+        return { text: `Low Stock: ${available}`, color: '#F39C12' };
+      } else {
+        return { text: `Stock: ${available}`, color: '#27AE60' };
+      }
+    }
+    else {
+      return { text: '-', color: '#000000ff' }; 
     }
   };
 
   const handleQuickAdd = (product: Product) => {
     setSelectedProduct(product);
     setQuickAddQuantity('1');
+    setSelectedUnit('Item');
     
-    // Set custom price from customer history or default
     const customerPrice = customerPrices.get(product.id);
     setCustomPrice(customerPrice ? customerPrice.toFixed(2) : product.price.toFixed(2));
     
     setShowQuickAdd(true);
   };
 
-  const handleAddToCart = () => {
+  const handleBackPress = () => {
+    Alert.alert(
+      'Leave Product Selection?',
+      'Your cart will be cleared if you go back. Are you sure you want to continue?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Yes, Clear Cart',
+          style: 'destructive',
+          onPress: () => {
+            clearCart();
+            router.back();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const handleAddToCart = async () => {
     if (!selectedProduct) return;
 
-    const quantity = parseInt(quickAddQuantity) || 1;
+    let quantity = parseInt(quickAddQuantity) || 1;
     const price = parseFloat(customPrice) || selectedProduct.price;
+    
+    let actualItemsToAdd = quantity;
+    if (selectedUnit === 'Case') {
+      actualItemsToAdd = quantity * 30;
+    } else if (selectedUnit === 'Pallet') {
+      actualItemsToAdd = quantity * 100;
+    }
+
     const available = getAvailableQuantity(selectedProduct);
 
-    if (quantity > available && available > 0) {
+    if (actualItemsToAdd > available && available > 0 && flowType === 'order') {
       Alert.alert(
         'Low Stock',
-        `Only ${available} units available. Do you want to add them all?`,
+        `Only ${available} items available. Do you want to add what's available?`,
         [
           { text: 'Cancel', style: 'cancel' },
           { 
             text: 'Add Available',
             onPress: () => {
-              addToCart(selectedProduct, available, selectedProduct.unit, price);
+              addToCart(selectedProduct, available, 'Item', price);
               setShowQuickAdd(false);
             }
           },
           {
             text: 'Add Anyway',
             onPress: () => {
-              addToCart(selectedProduct, quantity, selectedProduct.unit, price);
+              addToCart(selectedProduct, actualItemsToAdd, 'Item', price);
               setShowQuickAdd(false);
             },
             style: 'destructive'
           }
         ]
       );
-    } else if (available === 0) {
+    } else if (available === 0 && flowType === 'order') {
       Alert.alert(
         'Out of Stock',
-        'This item is out of stock. Do you want to add it anyway?',
+        'This item is currently out of stock. Do you want to add it anyway?',
         [
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Add Anyway',
             onPress: () => {
-              addToCart(selectedProduct, quantity, selectedProduct.unit, price);
+              addToCart(selectedProduct, actualItemsToAdd, 'Item', price);
               setShowQuickAdd(false);
             },
             style: 'destructive'
@@ -272,14 +414,15 @@ export default function ProductsScreen() {
         ]
       );
     } else {
-      addToCart(selectedProduct, quantity, selectedProduct.unit, price);
+      addToCart(selectedProduct, actualItemsToAdd, 'Item', price);
       setShowQuickAdd(false);
     }
+    
+    await fetchReservedQuantities();
   };
 
   const renderProduct = ({ item }: { item: Product }) => {
     const stockStatus = getStockStatus(item);
-    const inCart = isInCart(item.id);
     const cartQuantity = getItemQuantity(item.id);
     const customerPrice = customerPrices.get(item.id);
     const displayPrice = customerPrice || item.price;
@@ -326,19 +469,12 @@ export default function ProductsScreen() {
               )}
             </View>
             
-            {inCart ? (
-              <View style={styles.inCartBadge}>
-                <Ionicons name="checkmark" size={16} color="#FFF" />
-                <Text style={styles.inCartText}>{cartQuantity}</Text>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={() => handleQuickAdd(item)}
-              >
-                <Ionicons name="add" size={20} color="#FFF" />
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={() => handleQuickAdd(item)}
+            >
+              <Ionicons name="add" size={20} color="#FFF" />
+            </TouchableOpacity>
           </View>
         </View>
       </TouchableOpacity>
@@ -349,7 +485,7 @@ export default function ProductsScreen() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+       <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#ffffffff" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Products</Text>
@@ -366,35 +502,34 @@ export default function ProductsScreen() {
         </TouchableOpacity>
       </View>
 
-
-           {/* Progress Indicator */}
-                <View style={styles.progressContainer}>
-                  <View style={styles.progressSteps}>
-                    <View style={styles.progressStep}>
-                      <View style={[styles.progressDot, styles.progressDotComplete]}>
-                        <Ionicons name="checkmark" size={14} color="#FFF" />
-                      </View>
-                      <Text style={styles.progressLabel}>Customer</Text>
-                    </View>
-                    <View style={[styles.progressLine, styles.progressLineComplete]} />
-                    <View style={styles.progressStep}>
-                      <View style={[styles.progressDot, styles.progressDotComplete]}>
-                        <Ionicons name="checkmark" size={14} color="#FFF" />
-                      </View>
-                      <Text style={styles.progressLabel}>Details</Text>
-                    </View>
-                   <View style={[styles.progressLine, styles.progressLineComplete]} />
-                              <View style={styles.progressStep}>
-                                <View style={[styles.progressDot, styles.progressDotActive]} />
-                                <Text style={[styles.progressLabel, styles.progressLabelActive]}>Products</Text>
-                              </View>
-                      <View style={styles.progressLine} />
-                                <View style={styles.progressStep}>
-                                  <View style={styles.progressDot} />
-                                  <Text style={styles.progressLabel}>Review</Text>
-                                </View>
-                              </View>
-                </View>
+      {/* Progress Indicator */}
+      <View style={styles.progressContainer}>
+        <View style={styles.progressSteps}>
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, styles.progressDotComplete]}>
+              <Ionicons name="checkmark" size={14} color="#FFF" />
+            </View>
+            <Text style={styles.progressLabel}>Customer</Text>
+          </View>
+          <View style={[styles.progressLine, styles.progressLineComplete]} />
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, styles.progressDotComplete]}>
+              <Ionicons name="checkmark" size={14} color="#FFF" />
+            </View>
+            <Text style={styles.progressLabel}>Details</Text>
+          </View>
+          <View style={[styles.progressLine, styles.progressLineComplete]} />
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, styles.progressDotActive]} />
+            <Text style={[styles.progressLabel, styles.progressLabelActive]}>Products</Text>
+          </View>
+          <View style={styles.progressLine} />
+          <View style={styles.progressStep}>
+            <View style={styles.progressDot} />
+            <Text style={styles.progressLabel}>Review</Text>
+          </View>
+        </View>
+      </View>
 
       {/* Search Bar */}
       <View style={styles.searchContainer}>
@@ -402,39 +537,16 @@ export default function ProductsScreen() {
           <Ionicons name="search" size={20} color="#999" />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search products"
+            placeholder="Search products by name, SKU, or category"
+            placeholderTextColor="#686666ff"
             value={searchQuery}
             onChangeText={setSearchQuery}
             returnKeyType="search"
           />
+          {isSearching && (
+            <ActivityIndicator size="small" color="#E74C3C" style={{ marginLeft: 8 }} />
+          )}
         </View>
-      </View>
-
-      {/* Filter Pills */}
-      <View style={styles.filterContainer}>
-        <TouchableOpacity
-          style={[styles.filterPill, filters.category !== 'All' && styles.filterPillActive]}
-          onPress={() => setShowFilters(true)}
-        >
-          <Text style={styles.filterPillText}>Category</Text>
-          <Ionicons name="chevron-down" size={16} color="#666" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.filterPill, filters.stockLevel !== 'all' && styles.filterPillActive]}
-          onPress={() => setShowFilters(true)}
-        >
-          <Text style={styles.filterPillText}>Stock Level</Text>
-          <Ionicons name="chevron-down" size={16} color="#666" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.filterPill, filters.priceRange !== 'all' && styles.filterPillActive]}
-          onPress={() => setShowFilters(true)}
-        >
-          <Text style={styles.filterPillText}>Price</Text>
-          <Ionicons name="chevron-down" size={16} color="#666" />
-        </TouchableOpacity>
       </View>
 
       {/* Products List */}
@@ -462,128 +574,146 @@ export default function ProductsScreen() {
             <View style={styles.emptyContainer}>
               <Ionicons name="cube-outline" size={64} color="#DDD" />
               <Text style={styles.emptyText}>No products found</Text>
-              <Text style={styles.emptySubtext}>Try adjusting your filters</Text>
+              <Text style={styles.emptySubtext}>Try adjusting your search</Text>
             </View>
           }
         />
       )}
 
-        {/* Quick Add Modal */}
-   {/* Quick Add Modal */}
-<Modal
-  visible={showQuickAdd}
-  transparent={true}
-  animationType="slide"
-  onRequestClose={() => setShowQuickAdd(false)}
->
-  <KeyboardAvoidingView 
-    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    style={styles.modalOverlay}
-  >
-    <TouchableOpacity 
-      style={styles.modalBackdrop} 
-      activeOpacity={1} 
-      onPress={() => setShowQuickAdd(false)}
-    />
-    <View style={styles.modalContent}>
-      <View style={styles.modalHeader}>
-        <Text style={styles.modalTitle}>Add to Cart</Text>
-        <TouchableOpacity onPress={() => setShowQuickAdd(false)}>
-          <Ionicons name="close" size={24} color="#333" />
-        </TouchableOpacity>
-      </View>
+      {/* Quick Add Modal */}
+      <Modal
+        visible={showQuickAdd}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowQuickAdd(false)}
+      >
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <TouchableOpacity 
+            style={styles.modalBackdrop} 
+            activeOpacity={1} 
+            onPress={() => setShowQuickAdd(false)}
+          />
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Add to Cart</Text>
+              <TouchableOpacity onPress={() => setShowQuickAdd(false)}>
+                <Ionicons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
 
-      {selectedProduct && (
-        <ScrollView style={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.modalProduct}>
-            <Text style={styles.modalProductName}>{selectedProduct.product_name}</Text>
-            <Text style={styles.modalProductSku}>SKU: {selectedProduct.sku}</Text>
-            <Text style={[styles.modalStock, { color: getStockStatus(selectedProduct).color }]}>
-              {getStockStatus(selectedProduct).text}
-            </Text>
-          </View>
+            {selectedProduct && (
+              <ScrollView style={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
+                <View style={styles.modalProduct}>
+                  <Text style={styles.modalProductName}>{selectedProduct.product_name}</Text>
+                  <Text style={styles.modalProductSku}>SKU: {selectedProduct.sku}</Text>
+                  <Text style={[styles.modalStock, { color: getStockStatus(selectedProduct).color }]}>
+                    {getStockStatus(selectedProduct).text}
+                  </Text>
+                </View>
 
-          <View style={styles.modalInputs}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Quantity</Text>
-              <View style={styles.quantityRow}>
-                <TextInput
-                  style={styles.quantityInput}
-                  value={quickAddQuantity}
-                  onChangeText={setQuickAddQuantity}
-                  keyboardType="number-pad"
-                  placeholder="1"
-                />
-                <View style={styles.quickButtons}>
+                <View style={styles.modalInputs}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Quantity</Text>
+                    <View style={styles.quantityRow}>
+                      <TextInput
+                        style={styles.quantityInput}
+                        value={quickAddQuantity}
+                        onChangeText={setQuickAddQuantity}
+                        keyboardType="number-pad"
+                        placeholder="1"
+                      />
+                    </View>
+                    
+                    {/* Unit selection pills */}
+                    <View style={styles.unitPills}>
+                      <TouchableOpacity
+                        style={[styles.unitPill, selectedUnit === 'Item' && styles.unitPillActive]}
+                        onPress={() => setSelectedUnit('Item')}
+                      >
+                        <Text style={[styles.unitPillText, selectedUnit === 'Item' && styles.unitPillTextActive]}>
+                          Item
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.unitPill, selectedUnit === 'Case' && styles.unitPillActive]}
+                        onPress={() => setSelectedUnit('Case')}
+                      >
+                        <Text style={[styles.unitPillText, selectedUnit === 'Case' && styles.unitPillTextActive]}>
+                          Case (30 Items)
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.unitPill, selectedUnit === 'Pallet' && styles.unitPillActive]}
+                        onPress={() => setSelectedUnit('Pallet')}
+                      >
+                        <Text style={[styles.unitPillText, selectedUnit === 'Pallet' && styles.unitPillTextActive]}>
+                          Pallet (100 Items)
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>
+                      Unit Price {customerPrices.has(selectedProduct.id) && '(Custom)'}
+                    </Text>
+                    <View style={styles.priceInputContainer}>
+                      <Text style={styles.dollarSign}>$</Text>
+                      <TextInput
+                        style={styles.priceInput}
+                        value={customPrice}
+                        onChangeText={setCustomPrice}
+                        keyboardType="decimal-pad"
+                        placeholder={selectedProduct.price.toString()}
+                      />
+                    </View>
+                  </View>
+                </View>
+
+                <View style={styles.modalActions}>
                   <TouchableOpacity
-                    style={styles.quickButton}
-                    onPress={() => setQuickAddQuantity('30')}
+                    style={styles.cancelButton}
+                    onPress={() => setShowQuickAdd(false)}
                   >
-                    <Text style={styles.quickButtonText}>Case (30)</Text>
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.quickButton}
-                    onPress={() => setQuickAddQuantity('100')}
+                    style={styles.addToCartButton}
+                    onPress={handleAddToCart}
                   >
-                    <Text style={styles.quickButtonText}>Pallet (100)</Text>
+                    <Text style={styles.addToCartButtonText}>Add to Cart</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
-            </View>
+              </ScrollView>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>
-                Unit Price {customerPrices.has(selectedProduct.id) && '(Custom)'}
-              </Text>
-              <View style={styles.priceInputContainer}>
-                <Text style={styles.dollarSign}>$</Text>
-                <TextInput
-                  style={styles.priceInput}
-                  value={customPrice}
-                  onChangeText={setCustomPrice}
-                  keyboardType="decimal-pad"
-                  placeholder={selectedProduct.price.toString()}
-                />
-              </View>
+      {/* Continue to Cart Button with Total Price */}
+      {cartCount > 0 && (
+        <View style={styles.bottomActionContainer}>
+          <View style={styles.cartSummary}>
+            <View style={styles.cartSummaryLeft}>
+              <Text style={styles.cartSummaryLabel}>Cart Total</Text>
+              <Text style={styles.cartSummaryPrice}>${cartTotal.toFixed(2)}</Text>
+            </View>
+            <View style={styles.cartSummaryRight}>
+              <Text style={styles.cartItemCount}>{cartCount} {cartCount === 1 ? 'item' : 'items'}</Text>
             </View>
           </View>
-
-          <View style={styles.modalActions}>
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={() => setShowQuickAdd(false)}
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.addToCartButton}
-              onPress={handleAddToCart}
-            >
-              <Text style={styles.addToCartButtonText}>Add to Cart</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
+          <TouchableOpacity
+            style={styles.continueButton}
+            onPress={() => router.push('/(sales)/cart' as any)}
+          >
+            <Text style={styles.continueButtonText}>Continue to Cart</Text>
+            <Ionicons name="arrow-forward" size={20} color="#FFF" />
+          </TouchableOpacity>
+        </View>
       )}
-    </View>
-  </KeyboardAvoidingView>
-</Modal>
-
-{/* Continue to Cart Button */}
-{cartCount > 0 && (
-  <View style={styles.bottomActionContainer}>
-    <TouchableOpacity
-      style={styles.continueButton}
-      onPress={() => router.push('/(sales)/cart' as any)}
-    >
-      <Text style={styles.continueButtonText}>Continue to Cart</Text>
-      <View style={styles.cartCountBadge}>
-        <Text style={styles.cartCountText}>{cartCount}</Text>
-      </View>
-      <Ionicons name="arrow-forward" size={20} color="#FFF" />
-    </TouchableOpacity>
-  </View>
-)}
-
     </SafeAreaView>
   );
 }
@@ -594,48 +724,102 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
   },
   bottomActionContainer: {
-  position: 'absolute',
-  bottom: 0,
-  left: 0,
-  right: 0,
-  backgroundColor: '#FFF',
-  padding: 20,
-  borderTopWidth: 1,
-  borderTopColor: '#E0E0E0',
-  shadowColor: '#000',
-  shadowOffset: { width: 0, height: -2 },
-  shadowOpacity: 0.1,
-  shadowRadius: 4,
-  elevation: 5,
-},
-continueButton: {
-  flexDirection: 'row',
-  backgroundColor: '#E74C3C',
-  borderRadius: 25,
-  paddingVertical: 16,
-  paddingHorizontal: 24,
-  alignItems: 'center',
-  justifyContent: 'center',
-},
-continueButtonText: {
-  fontSize: 16,
-  fontWeight: '600',
-  color: '#FFF',
-  flex: 1,
-  textAlign: 'center',
-},
-cartCountBadge: {
-  backgroundColor: 'rgba(255, 255, 255, 0.3)',
-  borderRadius: 12,
-  paddingHorizontal: 8,
-  paddingVertical: 2,
-  marginRight: 8,
-},
-cartCountText: {
-  color: '#FFF',
-  fontSize: 14,
-  fontWeight: '600',
-},
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFF',
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  cartSummary: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  cartSummaryLeft: {
+    flex: 1,
+  },
+  cartSummaryRight: {
+    alignItems: 'flex-end',
+  },
+  cartSummaryLabel: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 2,
+  },
+  cartSummaryPrice: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+  },
+  cartItemCount: {
+    fontSize: 14,
+    color: '#666',
+  },
+  continueButton: {
+    flexDirection: 'row',
+    backgroundColor: '#E74C3C',
+    borderRadius: 25,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  continueButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFF',
+    flex: 1,
+    textAlign: 'center',
+  },
+  cartCountBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginRight: 8,
+  },
+  unitPills: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  unitPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  unitPillActive: {
+    backgroundColor: '#FFF0F0',
+    borderColor: '#E74C3C',
+  },
+  unitPillText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  unitPillTextActive: {
+    color: '#E74C3C',
+    fontWeight: '500',
+  },
+  cartCountText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -719,7 +903,7 @@ cartCountText: {
   },
   productList: {
     padding: 10,
-    paddingBottom: 80,
+    paddingBottom: 140,
   },
   productRow: {
     justifyContent: 'space-between',
@@ -852,40 +1036,40 @@ cartCountText: {
     color: '#999',
     marginTop: 8,
   },
-modalOverlay: {
-  flex: 1,
-  backgroundColor: 'rgba(0, 0, 0, 0.5)',
-  justifyContent: 'flex-end',
-},
-modalBackdrop: {
-  position: 'absolute',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-},
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   backButton: {
-  padding: 4,
-  color: '#ffffffff'
-},
-modalContent: {
-  backgroundColor: '#FFF',
-  borderTopLeftRadius: 20,
-  borderTopRightRadius: 20,
-  maxHeight: Platform.OS === 'ios' ? '70%' : '75%',
-  paddingBottom: Platform.OS === 'ios' ? 20 : 10,
-},
+    padding: 4,
+    color: '#ffffffff'
+  },
+  modalContent: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: Platform.OS === 'ios' ? '70%' : '75%',
+    paddingBottom: Platform.OS === 'ios' ? 20 : 10,
+  },
   modalScrollContent: {
     padding: 20,
   },
-modalHeader: {
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: 20,
-  borderBottomWidth: 1,
-  borderBottomColor: '#E0E0E0',
-},
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
   modalTitle: {
     fontSize: 18,
     fontWeight: '600',
@@ -1037,7 +1221,7 @@ modalHeader: {
     fontWeight: '600',
     textAlign: 'center',
   },
-   progressContainer: {
+  progressContainer: {
     backgroundColor: '#FFF',
     paddingVertical: 20,
     paddingHorizontal: 30,

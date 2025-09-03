@@ -1,6 +1,6 @@
 // app/(sales)/new-order/order-details.tsx - Order Details Screen
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
@@ -22,20 +22,18 @@ interface OrderDetailsForm {
   paymentType: 'cash' | 'card_zelle' | 'net15' | 'net30' | 'net60';
   deliveryDate: Date;
   deliveryTime: string;
-  poNumber: string;
   notes: string;
   specialHandlingNotes: string;
 }
 
 export default function OrderDetailsScreen() {
-  const { customer, setOrderData, setCurrentStep, flowType } = useOrderFlow();
-  
+  const { customer, setOrderData, setCurrentStep, setCustomer } = useOrderFlow();
+
   const [form, setForm] = useState<OrderDetailsForm>({
     orderType: 'delivery',
     paymentType: 'cash',
     deliveryDate: new Date(),
     deliveryTime: '',
-    poNumber: '',
     notes: '',
     specialHandlingNotes: '',
   });
@@ -44,6 +42,10 @@ export default function OrderDetailsScreen() {
   const [errors, setErrors] = useState<Partial<OrderDetailsForm>>({});
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [deliveryTime, setDeliveryTime] = useState(new Date());
+  const params = useLocalSearchParams();
+const [isFromProposal, setIsFromProposal] = useState(false);
+const [proposalId, setProposalId] = useState<string | null>(null);
+
 
   useEffect(() => {
     if (!customer) {
@@ -90,7 +92,6 @@ const formattedTime = deliveryTime
     paymentType: form.paymentType,
     deliveryDate: form.deliveryDate.toISOString(),
     deliveryTime: formattedTime,
-    poNumber: form.poNumber,
     notes: form.notes,
     specialHandlingNotes: form.specialHandlingNotes,
   });
@@ -264,18 +265,7 @@ const formattedTime = deliveryTime
         : 'Select time'}
     </Text>
   </TouchableOpacity>
-</View>
-
-          {/* PO Number */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>PO Number</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Purchase order number (optional)"
-              value={form.poNumber}
-              onChangeText={(text) => setForm(prev => ({ ...prev, poNumber: text }))}
-            />
-          </View>
+</View> 
 
           {/* Notes */}
           <View style={styles.section}>
@@ -283,6 +273,7 @@ const formattedTime = deliveryTime
             <TextInput
               style={[styles.textInput, styles.textArea]}
               placeholder="Add any notes about this order..."
+              placeholderTextColor="#686666ff" 
               value={form.notes}
               onChangeText={(text) => setForm(prev => ({ ...prev, notes: text }))}
               multiline
@@ -297,6 +288,7 @@ const formattedTime = deliveryTime
               <TextInput
                 style={[styles.textInput, styles.textArea]}
                 placeholder="Delivery instructions, access codes, etc..."
+                placeholderTextColor="#686666ff" 
                 value={form.specialHandlingNotes}
                 onChangeText={(text) => setForm(prev => ({ ...prev, specialHandlingNotes: text }))}
                 multiline
@@ -540,8 +532,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
   },
   textArea: {
+    
     minHeight: 80,
     textAlignVertical: 'top',
+    color: '#333',
   },
   bottomPadding: {
     height: 100,

@@ -79,7 +79,7 @@ useEffect(() => {
   const getStatusText = (available: number, quantity: number) => {
     if (available === 0) return 'Out of Stock';
     if (quantity > available) return `Only ${available} available`;
-    return 'In Stock';
+    if (quantity <= available) return 'In Stock';
   };
 
   const generateOrderNumber = () => {
@@ -121,111 +121,263 @@ useEffect(() => {
     }
   };
 
-  const submitOrder = async () => {
-    setIsSubmitting(true);
-    const generatedOrderNumber = generateOrderNumber();
-    setOrderNumber(generatedOrderNumber);
+const submitOrder = async () => {
+  setIsSubmitting(true);
+  const generatedOrderNumber = generateOrderNumber();
+  setOrderNumber(generatedOrderNumber);
 
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No authenticated user');
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('No authenticated user');
 
-      // Create the order
-      const orderPayload = {
-        order_number: generatedOrderNumber,
-        customer_id: customer!.id,
-        sales_agent_id: user.id,
-        delivery_date: orderData!.deliveryDate,
-        delivery_time: orderData!.deliveryTime || null,
-        payment_type: orderData!.paymentType,
-        status: 'draft',
-        subtotal: orderSummary.subtotal,
-        tax_amount: orderSummary.tax,
-        discount_amount: 0,
-        total_amount: orderSummary.total,
-        notes: orderData!.notes || null,
-        special_handling_notes: orderData!.specialHandlingNotes || null,
-        order_type:  orderData!.orderType,
-      };
+    console.log(`Creating ${flowType === 'proposal' ? 'proposal' : 'order'} ${generatedOrderNumber}`);
 
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .insert(orderPayload)
-        .select()
-        .single();
+    // ============================================
+    // CREATE ORDER/PROPOSAL RECORD
+    // ============================================
+    const orderPayload = {
+      order_number: generatedOrderNumber,
+      customer_id: customer!.id,
+      sales_agent_id: user.id,
+      delivery_date: orderData!.deliveryDate,
+      delivery_time: orderData!.deliveryTime || null,
+      payment_type: orderData!.paymentType,
+      status: 'draft',
+      subtotal: orderSummary.subtotal,
+      tax_amount: orderSummary.tax,
+      discount_amount: 0,
+      total_amount: orderSummary.total,
+      notes: orderData!.notes || null,
+      special_handling_notes: orderData!.specialHandlingNotes || null,
+      order_type: orderData!.orderType,
+      is_proposal: flowType === 'proposal', // KEY FIELD: Determines if this is a proposal or order
+    };
 
-      if (orderError) throw orderError;
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .insert(orderPayload)
+      .select()
+      .single();
 
-      // Create order items
-      const orderItems = items.map(item => ({
+    if (orderError) throw orderError;
+
+    console.log(`${flowType === 'proposal' ? 'Proposal' : 'Order'} created with ID: ${order.id}`);
+
+    // ============================================
+    // CREATE ORDER ITEMS (Same for both proposals and orders)
+    // ============================================
+    const orderItems = items.map(item => {
+      // Calculate actual items needed for stock status display
+      let actualItemsNeeded = item.quantity;
+      if (item.unit === 'Case') actualItemsNeeded = item.quantity * 30;
+      if (item.unit === 'Pallet') actualItemsNeeded = item.quantity * 100;
+
+      return {
         order_id: order.id,
         product_id: item.product_id,
         product_name: item.product_name,
         product_sku: item.sku,
-        quantity: item.quantity,
+        quantity: item.quantity, // Store the unit quantity (e.g., 2 cases)
         unit: item.unit,
         unit_price: item.unit_price,
         total_price: item.total_price,
         stock_available: item.available_quantity,
-        stock_status: getStatusText(item.available_quantity, item.quantity),
-      }));
+        stock_status: actualItemsNeeded > item.available_quantity 
+          ? `Only ${item.available_quantity} items available` 
+          : 'In Stock',
+      };
+    });
 
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
+    const { error: itemsError } = await supabase
+      .from('order_items')
+      .insert(orderItems);
 
-      if (itemsError) throw itemsError;
+    if (itemsError) throw itemsError;
 
-      // Update reserved inventory for orders (not proposals)
-      if (flowType !== 'proposal') {
-        for (const item of items) {
-          // Create reserved inventory record
-          const { error: reserveError } = await supabase
-            .from('reserved_inventory')
-            .insert({
-              product_id: item.product_id,
-              quantity: item.quantity,
-              reserved_by: customer!.id,
-              reserved_for: `Order ${order.order_number}`,
-              expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
-            });
+    console.log(`Created ${orderItems.length} order items`);
 
-          if (reserveError) console.error('Error reserving inventory:', reserveError);
+    // ============================================
+    // ONLY FOR ACTUAL ORDERS (NOT PROPOSALS)
+    // ============================================
+    if (flowType !== 'proposal') {
+      
+      // ============================================
+      // CREATE INVENTORY RESERVATIONS
+      // ============================================
+      console.log('Creating inventory reservations for order...');
+      
+      for (const item of items) {
+        let quantityToReserve = item.quantity;
+        if (item.unit === 'Case') {
+          quantityToReserve = item.quantity * 30;
+        } else if (item.unit === 'Pallet') {
+          quantityToReserve = item.quantity * 100;
+        }
+        
+        const { error: reserveError } = await supabase
+          .from('reserved_inventory')
+          .insert({
+            product_id: item.product_id,
+            quantity: quantityToReserve,
+            reserved_by: customer!.id,
+            reserved_for: `Order ${order.order_number}`,
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            released: false
+          });
+
+        if (reserveError) {
+          console.log(`Note: Reservation for ${item.product_name}: ${reserveError.message}`);
+          if (reserveError.message?.includes('Insufficient stock')) {
+            console.log(`Backorder created for ${item.product_name} - Reserved ${quantityToReserve} items`);
+          }
+        } else {
+          console.log(`Reserved ${quantityToReserve} units of ${item.product_name}`);
         }
       }
 
-      // Save customer price history
+      // ============================================
+      // SAVE/UPDATE CUSTOMER PRICE HISTORY
+      // ============================================
+      console.log('Updating customer price history...');
+      
       for (const item of items) {
-        const { error: priceError } = await supabase
+        // Calculate total quantity in base units for history tracking
+        let totalQuantityInItems = item.quantity;
+        if (item.unit === 'Case') {
+          totalQuantityInItems = item.quantity * 30;
+        } else if (item.unit === 'Pallet') {
+          totalQuantityInItems = item.quantity * 100;
+        }
+
+        // Check if there's existing price history for this customer-product combo
+        const { data: existingHistory, error: fetchError } = await supabase
           .from('customer_price_history')
-          .upsert({
+          .select('*')
+          .eq('customer_id', customer!.id)
+          .eq('product_id', item.product_id)
+          .single();
+
+        if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = no rows found
+          console.error('Error fetching price history:', fetchError);
+        }
+
+        // Get the original product price for discount calculation
+        const { data: product } = await supabase
+          .from('products')
+          .select('price')
+          .eq('id', item.product_id)
+          .single();
+
+        const originalPrice = product?.price || item.unit_price;
+        const discountPercentage = originalPrice > 0 
+          ? ((originalPrice - item.unit_price) / originalPrice * 100).toFixed(2)
+          : '0';
+
+        // Check if price changed or this is a new customer-product combination
+        const priceChanged = !existingHistory || existingHistory.last_price !== item.unit_price;
+        const unitChanged = existingHistory && existingHistory.last_unit !== item.unit;
+
+        if (priceChanged || unitChanged || !existingHistory) {
+          // Either create new record or update existing one
+          const priceHistoryData = {
             customer_id: customer!.id,
             product_id: item.product_id,
             last_price: item.unit_price,
             last_quantity: item.quantity,
             last_unit: item.unit,
             last_order_date: new Date().toISOString(),
-            times_ordered: 1,
-            total_quantity_ordered: item.quantity,
-          }, {
-            onConflict: 'customer_id,product_id',
-          });
+            original_price: originalPrice,
+            discount_percentage: parseFloat(discountPercentage),
+            price_locked: false,
+            times_ordered: existingHistory ? (existingHistory.times_ordered || 0) + 1 : 1,
+            total_quantity_ordered: existingHistory 
+              ? (existingHistory.total_quantity_ordered || 0) + totalQuantityInItems 
+              : totalQuantityInItems,
+            updated_at: new Date().toISOString(),
+          };
 
-        if (priceError) console.error('Error saving price history:', priceError);
+          const { error: priceError } = await supabase
+            .from('customer_price_history')
+            .upsert(priceHistoryData, {
+              onConflict: 'customer_id,product_id',
+            });
+
+          if (priceError) {
+            console.error('Error saving price history:', priceError);
+          } else {
+            console.log(`Price history updated for ${item.product_name}: 
+              Price: $${item.unit_price} (${discountPercentage}% discount), 
+              Unit: ${item.unit}`);
+          }
+
+          // Log price change to price_change_log if price actually changed
+          if (priceChanged && existingHistory) {
+            const { error: logError } = await supabase
+              .from('price_change_log')
+              .insert({
+                customer_id: customer!.id,
+                product_id: item.product_id,
+                old_price: existingHistory.last_price,
+                new_price: item.unit_price,
+                original_price: originalPrice,
+                price_difference_percentage: parseFloat(discountPercentage),
+                changed_by: user.id,
+                order_id: order.id,
+                change_type: item.unit_price < existingHistory.last_price ? 'discount' : 'increase',
+                reason: `Order ${order.order_number}`,
+              });
+
+            if (logError) {
+              console.error('Error logging price change:', logError);
+            } else {
+              console.log(`Price change logged for ${item.product_name}`);
+            }
+          }
+        } else {
+          // Price didn't change, just update the order count and total quantity
+          const { error: updateError } = await supabase
+            .from('customer_price_history')
+            .update({
+              times_ordered: (existingHistory.times_ordered || 0) + 1,
+              total_quantity_ordered: (existingHistory.total_quantity_ordered || 0) + totalQuantityInItems,
+              last_order_date: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('customer_id', customer!.id)
+            .eq('product_id', item.product_id);
+
+          if (updateError) {
+            console.error('Error updating order count:', updateError);
+          } else {
+            console.log(`Order count updated for ${item.product_name} (price unchanged at $${item.unit_price})`);
+          }
+        }
       }
-
-      setCreatedOrderId(order.id);
-      setShowSuccessModal(true);
-      
-      // Clear cart after successful submission
-      clearCart();
-    } catch (error: any) {
-      console.error('Error submitting order:', error);
-      Alert.alert('Error', error.message || 'Failed to submit order');
-    } finally {
-      setIsSubmitting(false);
+    } else {
+      console.log('Skipping inventory reservations and price history for proposal');
     }
-  };
+
+    // ============================================
+    // SUCCESS HANDLING
+    // ============================================
+    setCreatedOrderId(order.id);
+    setShowSuccessModal(true);
+    
+    // Clear cart after successful submission
+    clearCart();
+    
+    console.log(`${flowType === 'proposal' ? 'Proposal' : 'Order'} ${generatedOrderNumber} created successfully with ${items.length} items`);
+    
+  } catch (error: any) {
+    console.error('Error submitting order:', error);
+    Alert.alert(
+      'Error', 
+      error.message || `Failed to create ${flowType === 'proposal' ? 'proposal' : 'order'}. Please try again.`
+    );
+  } finally {
+    setIsSubmitting(false);
+  }
+};
 
   const handleGenerateDocument = () => {
     setShowSuccessModal(false);
@@ -293,15 +445,15 @@ const handleDone = async () => {
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {/* Warning Banner */}
+
         {items.some(item => item.available_quantity === 0) && (
           <View style={styles.warningBanner}>
-            <Ionicons name="warning" size={20} color="#856404" />
+            <Ionicons name="warning" size={20} color="#0e0d0aff" />
             <Text style={styles.warningText}>
               Some items are out of stock. You can still proceed with the order.
             </Text>
           </View>
         )}
-
         {/* Customer Section */}
         {customer && (
           <View style={styles.section}>
@@ -368,42 +520,55 @@ const handleDone = async () => {
   </View>
 )}
 
-        {/* Items Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Items ({items.length})</Text>
-          {items.map((item, index) => (
-            <View key={index} style={styles.itemCard}>
-              <View style={styles.itemHeader}>
-                <View style={styles.itemInfo}>
-                  <Text style={styles.itemName}>{item.product_name}</Text>
-                  {item.is_tobacco && (
-                    <View style={styles.tobaccoBadge}>
-                      <Text style={styles.tobaccoText}>Tobacco</Text>
-                    </View>
-                  )}
-                  <Text style={styles.itemSku}>SKU: {item.sku}</Text>
-                </View>
-                <View style={styles.itemQuantity}>
-                  <Text style={styles.quantityText}>
-                    {item.quantity} item(s)
-                  </Text>
-                  <Text style={[
-                    styles.stockStatus,
-                    { color: getStatusColor(item.available_quantity, item.quantity) }
-                  ]}>
-                    {getStatusText(item.available_quantity, item.quantity)}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.itemPricing}>
-                <Text style={styles.unitPrice}>
-                  ${item.unit_price.toFixed(2)} per item
-                </Text>
-                <Text style={styles.lineTotal}>${item.total_price.toFixed(2)}</Text>
-              </View>
+       {/* Items Section */}
+<View style={styles.section}>
+  <Text style={styles.sectionTitle}>Items ({items.length})</Text>
+  {items.map((item, index) => (
+    <View key={index} style={styles.itemCard}>
+      <View style={styles.itemHeader}>
+        <View style={styles.itemInfo}>
+          <Text style={styles.itemName}>{item.product_name}</Text>
+          {item.is_tobacco && (
+            <View style={styles.tobaccoBadge}>
+              <Text style={styles.tobaccoText}>Tobacco</Text>
             </View>
-          ))}
+          )}
+          <Text style={styles.itemSku}>SKU: {item.sku}</Text>
+          
         </View>
+      
+        <View style={styles.itemQuantity}>
+          <Text style={styles.quantityText}>
+            {/* UPDATE THIS: Show quantity with proper unit */}
+            {item.quantity} {item.unit || 'Item'}(s)
+          </Text>
+          
+          {/* ADD THIS: Show total items for Cases and Pallets */}
+          {(item.unit === 'Case' || item.unit === 'Pallet') && (
+            <Text style={styles.totalItemsText}>
+              = {item.unit === 'Case' ? item.quantity * 30 : item.quantity * 100} total items
+            </Text>
+          )}
+          
+          <Text style={[
+            styles.stockStatus,
+            { color: getStatusColor(item.available_quantity, item.quantity) }
+          ]}>
+            {getStatusText(item.available_quantity, item.quantity)}
+          </Text>
+        </View>
+      </View>
+      
+      <View style={styles.itemPricing}>
+        <Text style={styles.unitPrice}>
+          {/* UPDATE THIS: Show price per correct unit */}
+          ${item.unit_price.toFixed(2)} per {item.unit || 'Item'}
+        </Text>
+        <Text style={styles.lineTotal}>${item.total_price.toFixed(2)}</Text>
+      </View>
+    </View>
+  ))}
+</View>
 
         {/* Summary Section */}
         <View style={styles.section}>
@@ -518,7 +683,6 @@ const handleDone = async () => {
       {/* Proposal Generator */}
       {showProposalGenerator && createdOrderId && (
         <ProposalGenerator
-          orderId={createdOrderId}
           customer={customer!}
           items={items}
           orderSummary={orderSummary}
@@ -544,6 +708,25 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#000000ff',
+  },
+  unitBadge: {
+    backgroundColor: '#F0F4FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+  },
+  unitText: {
+    fontSize: 12,
+    color: '#3B82F6',
+    fontWeight: '500',
+  },
+  totalItemsText: {
+    fontSize: 11,
+    color: '#666',
+    fontStyle: 'italic',
+    marginTop: 2,
   },
   backButton: {
     padding: 4,

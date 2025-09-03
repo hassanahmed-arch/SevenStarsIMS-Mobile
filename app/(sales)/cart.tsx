@@ -1,4 +1,4 @@
-// src/screens/sales/Cart.tsx
+// src/screens/sales/Cart.tsx - Updated with numeric quantity editing
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -11,6 +11,7 @@ import {
   Platform,
   SafeAreaView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -45,9 +46,10 @@ interface OrderSummary {
 
 const CartScreen = () => {
   const { cartItems, updateQuantity, removeItem, clearCart } = useCart();
-  const { orderData, customer, resetFlow } = useOrderFlow();
+  const { orderData, customer, resetFlow, flowType } = useOrderFlow();
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [items, setItems] = useState<CartItem[]>([]);
+  const [taxEnabled, setTaxEnabled] = useState(true);
   const [orderSummary, setOrderSummary] = useState<OrderSummary>({
     subtotal: 0,
     shipping: 0,
@@ -57,9 +59,10 @@ const CartScreen = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
   const [tempPrice, setTempPrice] = useState<string>('');
+  const [editingQuantity, setEditingQuantity] = useState<string | null>(null);
+  const [tempQuantity, setTempQuantity] = useState<string>('');
 
-  // Constants for calculations
-  const TAX_RATE = 0.10; // 10% tax rate
+  const TAX_RATE = 0.10;
   const SHIPPING_FEE = orderData?.orderType === 'pickup' ? 0 : 25.00;
 
   useEffect(() => {
@@ -68,18 +71,16 @@ const CartScreen = () => {
 
   useEffect(() => {
     calculateTotals();
-  }, [items, SHIPPING_FEE]);
+  }, [items, SHIPPING_FEE, taxEnabled]);
 
   const loadCartItems = async () => {
     if (!cartItems || cartItems.length === 0) {
       setItems([]);
       setItemsLoaded(true);
       return;
-      
     }
 
     try {
-      // Fetch product details and check available inventory
       const productIds = cartItems.map(item => item.product_id);
       
       const { data: products, error } = await supabase
@@ -89,7 +90,8 @@ const CartScreen = () => {
 
       if (error) throw error;
 
-      // Fetch customer price history if customer is selected
+      const reservedQuantities = await fetchReservedQuantities(productIds);
+
       let priceHistory: any[] = [];
       if (customer?.id) {
         const { data: history } = await supabase
@@ -101,15 +103,13 @@ const CartScreen = () => {
         priceHistory = history || [];
       }
 
-      // Map cart items with full product details
       const enrichedItems: CartItem[] = cartItems.map(cartItem => {
         const product = products?.find(p => p.id === cartItem.product_id);
         const customerPrice = priceHistory.find(h => h.product_id === cartItem.product_id);
         
-        // Calculate available quantity (actual - reserved)
-        const availableQty = Math.max(0, (product?.quantity || 0) - (product?.reserved_qty || 0));
+        const reserved = reservedQuantities.get(cartItem.product_id) || 0;
+        const availableQty = Math.max(0, (product?.quantity || 0) - reserved);
         
-        // Use customer's last price if available, otherwise use product default
         const unitPrice = cartItem.custom_price || customerPrice?.last_price || product?.price || 0;
         
         return {
@@ -118,7 +118,7 @@ const CartScreen = () => {
           product_name: product?.product_name || 'Unknown Product',
           sku: product?.sku || '',
           quantity: cartItem.quantity,
-          unit: cartItem.unit || product?.unit || 'pcs',
+          unit: 'Item',
           unit_price: unitPrice,
           total_price: cartItem.quantity * unitPrice,
           original_price: product?.price || 0,
@@ -129,8 +129,8 @@ const CartScreen = () => {
         };
       });
 
-       setItems(enrichedItems);
-    setItemsLoaded(true);
+      setItems(enrichedItems);
+      setItemsLoaded(true);
     } catch (error) {
       setItemsLoaded(true);
       console.error('Error loading cart items:', error);
@@ -141,7 +141,7 @@ const CartScreen = () => {
   const calculateTotals = () => {
     const subtotal = items.reduce((sum, item) => sum + item.total_price, 0);
     const shipping = SHIPPING_FEE;
-    const tax = subtotal * TAX_RATE;
+    const tax = taxEnabled ? subtotal * TAX_RATE : 0;
     const total = subtotal + shipping + tax;
 
     setOrderSummary({
@@ -150,6 +150,31 @@ const CartScreen = () => {
       tax,
       total,
     });
+  };
+
+  const fetchReservedQuantities = async (productIds: string[]) => {
+    try {
+      const { data: reservations, error } = await supabase
+        .from('reserved_inventory')
+        .select('product_id, quantity')
+        .in('product_id', productIds)
+        .eq('released', false)
+        .neq('reserved_for', 'Cart Reservation')
+        .gte('expires_at', new Date().toISOString());
+
+      if (error) throw error;
+
+      const reservedMap = new Map<string, number>();
+      reservations?.forEach(item => {
+        const current = reservedMap.get(item.product_id) || 0;
+        reservedMap.set(item.product_id, current + item.quantity);
+      });
+
+      return reservedMap;
+    } catch (error) {
+      console.error('Error fetching reserved quantities:', error);
+      return new Map<string, number>();
+    }
   };
 
   const handleQuantityChange = async (itemId: string, delta: number) => {
@@ -163,20 +188,51 @@ const CartScreen = () => {
       return;
     }
 
-    // Check if new quantity exceeds available stock
-    if (newQuantity > item.available_quantity && item.available_quantity > 0) {
+    validateAndUpdateQuantity(itemId, newQuantity);
+  };
+
+  const handleQuantityEdit = (itemId: string, currentQuantity: number) => {
+    setEditingQuantity(itemId);
+    setTempQuantity(currentQuantity.toString());
+  };
+
+  const saveQuantityEdit = async (itemId: string) => {
+    const newQuantity = parseInt(tempQuantity);
+    
+    if (isNaN(newQuantity) || newQuantity < 0) {
+      Alert.alert('Invalid Quantity', 'Please enter a valid quantity');
+      return;
+    }
+
+    if (newQuantity === 0) {
+      handleRemoveItem(itemId);
+      setEditingQuantity(null);
+      setTempQuantity('');
+      return;
+    }
+
+    validateAndUpdateQuantity(itemId, newQuantity);
+    setEditingQuantity(null);
+    setTempQuantity('');
+  };
+
+  const validateAndUpdateQuantity = (itemId: string, newQuantity: number) => {
+    const item = items.find(i => i.id === itemId);
+    if (!item) return;
+
+    if (newQuantity > item.available_quantity && item.available_quantity > 0 && flowType === 'order') {
       Alert.alert(
         'Low Stock Warning',
-        `Only ${item.available_quantity} units available. Do you want to continue?`,
+        `Only ${item.available_quantity} items available. Continue?`,
         [
           { text: 'Cancel', style: 'cancel' },
           { 
             text: 'Continue',
-            onPress: () => updateItemQuantity(itemId, newQuantity),
+            onPress: () => updateQuantity(itemId, newQuantity),
           },
         ]
       );
-    } else if (item.available_quantity === 0) {
+    } else if (item.available_quantity === 0 && flowType === 'order') {
       Alert.alert(
         'Out of Stock',
         'This item is currently out of stock. Do you want to add it anyway?',
@@ -184,23 +240,14 @@ const CartScreen = () => {
           { text: 'Cancel', style: 'cancel' },
           { 
             text: 'Add Anyway',
-            onPress: () => updateItemQuantity(itemId, newQuantity),
+            onPress: () => updateQuantity(itemId, newQuantity),
             style: 'destructive',
           },
         ]
       );
     } else {
-      updateItemQuantity(itemId, newQuantity);
+      updateQuantity(itemId, newQuantity);
     }
-  };
-
-  const updateItemQuantity = (itemId: string, newQuantity: number) => {
-    updateQuantity(itemId, newQuantity);
-    setItems(prev => prev.map(item => 
-      item.id === itemId 
-        ? { ...item, quantity: newQuantity, total_price: newQuantity * item.unit_price }
-        : item
-    ));
   };
 
   const handleRemoveItem = (itemId: string) => {
@@ -234,7 +281,6 @@ const CartScreen = () => {
       return;
     }
 
-    // Update item price
     setItems(prev => prev.map(item => 
       item.id === itemId 
         ? { 
@@ -246,7 +292,6 @@ const CartScreen = () => {
         : item
     ));
 
-    // Update cart context with custom price
     const item = items.find(i => i.id === itemId);
     if (item) {
       updateQuantity(itemId, item.quantity, newPrice);
@@ -256,63 +301,59 @@ const CartScreen = () => {
     setTempPrice('');
   };
 
-const handlePlaceOrder = async () => {
-  // Wait a moment for items to be fully loaded if needed
-   if (!itemsLoaded || items.length === 0) {
-    return;
-  }
-  if (items.length === 0 && cartItems.length > 0) {
-    // Items haven't loaded yet, wait and retry
-    setTimeout(() => handlePlaceOrder(), 100);
-    return;
-  }
+  const handlePlaceOrder = async () => {
+    if (!itemsLoaded || items.length === 0) {
+      return;
+    }
 
-  if (!customer) {
-    Alert.alert('Customer Required', 'Please select a customer first');
-    router.push('/(sales)/new-order/select-customer' as any);
-    return;
-  }
+    if (!customer) {
+      Alert.alert('Customer Required', 'Please select a customer first');
+      router.push('/(sales)/new-order/select-customer' as any);
+      return;
+    }
 
-  if (!orderData) {
-    Alert.alert('Order Details Required', 'Please complete order details');
-    router.push('/(sales)/new-order/order-details' as any);
-    return;
-  }
+    if (!orderData) {
+      Alert.alert('Order Details Required', 'Please complete order details');
+      router.push('/(sales)/new-order/order-details' as any);
+      return;
+    }
 
-  // Check for out of stock items
-  const outOfStockItems = items.filter(item => item.available_quantity === 0);
-  if (outOfStockItems.length > 0) {
-    Alert.alert(
-      'Out of Stock Items',
-      `${outOfStockItems.length} items in your cart are out of stock. Do you want to proceed anyway?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Proceed', onPress: () => proceedToOverview() },
-      ]
-    );
-  } else {
-    proceedToOverview();
-  }
-};
+    const outOfStockItems = items.filter(item => item.available_quantity === 0);
+    if (outOfStockItems.length > 0 && flowType === 'order') {
+      Alert.alert(
+        'Out of Stock Items',
+        `${outOfStockItems.length} items in your cart are out of stock. Do you want to proceed anyway?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Proceed', onPress: () => proceedToOverview() },
+        ]
+      );
+    } else {
+      proceedToOverview();
+    }
+  };
 
- const proceedToOverview = () => {
-  // Ensure items are loaded
-  if (!items || items.length === 0) {
-    Alert.alert('Error', 'No items to review');
-    return;
-  }
-  
-  // Navigate to order overview with all data
-  router.push({
-    pathname: '/(sales)/new-order/overview' as any,
-    params: {
-      customer: JSON.stringify(customer),
-      orderData: JSON.stringify(orderData),
-      items: JSON.stringify(items),
-      summary: JSON.stringify(orderSummary),
-    },
-  });
-};
+  const proceedToOverview = () => {
+    if (!items || items.length === 0) {
+      Alert.alert('Error', 'No items to review');
+      return;
+    }
+    
+    const summaryWithTax = {
+      ...orderSummary,
+      taxEnabled: taxEnabled
+    };
+    
+    router.push({
+      pathname: '/(sales)/new-order/overview' as any,
+      params: {
+        customer: JSON.stringify(customer),
+        orderData: JSON.stringify(orderData),
+        items: JSON.stringify(items),
+        summary: JSON.stringify(summaryWithTax),
+      },
+    });
+  };
 
   const handleClearCart = () => {
     Alert.alert(
@@ -325,7 +366,7 @@ const handlePlaceOrder = async () => {
           style: 'destructive',
           onPress: () => {
             clearCart();
-            resetFlow();
+            router.back();
           },
         },
       ]
@@ -381,7 +422,7 @@ const handlePlaceOrder = async () => {
                   styles.itemPrice,
                   item.custom_price_used && styles.customPrice
                 ]}>
-                  ${item.unit_price.toFixed(2)}
+                  ${item.unit_price.toFixed(2)} per Item
                 </Text>
                 <Ionicons name="pencil" size={14} color="#666" style={styles.editIcon} />
               </TouchableOpacity>
@@ -390,34 +431,60 @@ const handlePlaceOrder = async () => {
         </View>
       </View>
 
-      {/* Quantity controls */}
+      {/* Quantity controls with editable input */}
       <View style={styles.quantitySection}>
         <View style={styles.quantityControls}>
           <TouchableOpacity
             style={styles.quantityButton}
             onPress={() => handleQuantityChange(item.id, -1)}
+            disabled={editingQuantity === item.id}
           >
-            <Ionicons name="remove" size={20} color="#666" />
+            <Ionicons name="remove" size={20} color={editingQuantity === item.id ? "#CCC" : "#666"} />
           </TouchableOpacity>
           
-          <Text style={styles.quantityText}>{item.quantity}</Text>
+          {editingQuantity === item.id ? (
+            <View style={styles.quantityEditContainer}>
+              <TextInput
+                style={styles.quantityInput}
+                value={tempQuantity}
+                onChangeText={setTempQuantity}
+                keyboardType="number-pad"
+                autoFocus
+                onBlur={() => saveQuantityEdit(item.id)}
+                onSubmitEditing={() => saveQuantityEdit(item.id)}
+              />
+              <Text style={styles.quantityUnit}>items</Text>
+              <TouchableOpacity onPress={() => saveQuantityEdit(item.id)} style={styles.checkButton}>
+                <Ionicons name="checkmark" size={20} color="#27AE60" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.quantityTextButton}
+              onPress={() => handleQuantityEdit(item.id, item.quantity)}
+            >
+              <Text style={styles.quantityText}>{item.quantity} items</Text>
+              <Ionicons name="pencil" size={12} color="#666" style={styles.quantityEditIcon} />
+            </TouchableOpacity>
+          )}
           
           <TouchableOpacity
             style={styles.quantityButton}
             onPress={() => handleQuantityChange(item.id, 1)}
+            disabled={editingQuantity === item.id}
           >
-            <Ionicons name="add" size={20} color="#666" />
+            <Ionicons name="add" size={20} color={editingQuantity === item.id ? "#CCC" : "#666"} />
           </TouchableOpacity>
         </View>
 
         {/* Stock warning */}
-        {item.available_quantity === 0 && (
+        {item.available_quantity === 0 && flowType === 'order' && (
           <View style={styles.stockWarning}>
             <Ionicons name="warning" size={14} color="#E74C3C" />
             <Text style={styles.stockWarningText}>Out of stock</Text>
           </View>
         )}
-        {item.available_quantity > 0 && item.quantity > item.available_quantity && (
+        {item.available_quantity > 0 && item.quantity > item.available_quantity && flowType === 'order' && (
           <View style={styles.stockWarning}>
             <Ionicons name="warning" size={14} color="#F39C12" />
             <Text style={styles.stockWarningText}>
@@ -425,6 +492,12 @@ const handlePlaceOrder = async () => {
             </Text>
           </View>
         )}
+      </View>
+
+      {/* Item total */}
+      <View style={styles.itemTotalRow}>
+        <Text style={styles.itemTotalLabel}>Item Total:</Text>
+        <Text style={styles.itemTotalValue}>${item.total_price.toFixed(2)}</Text>
       </View>
     </View>
   );
@@ -485,6 +558,17 @@ const handlePlaceOrder = async () => {
             <View style={styles.summaryContainer}>
               <Text style={styles.sectionTitle}>Order Summary</Text>
               
+              {/* Tax Toggle */}
+              <View style={styles.taxToggleContainer}>
+                <Text style={styles.taxToggleLabel}>Include Tax</Text>
+                <Switch
+                  value={taxEnabled}
+                  onValueChange={setTaxEnabled}
+                  trackColor={{ false: '#E0E0E0', true: '#E74C3C40' }}
+                  thumbColor={taxEnabled ? '#E74C3C' : '#999'}
+                />
+              </View>
+              
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Subtotal</Text>
                 <Text style={styles.summaryValue}>${orderSummary.subtotal.toFixed(2)}</Text>
@@ -497,10 +581,12 @@ const handlePlaceOrder = async () => {
                 </View>
               )}
               
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Tax</Text>
-                <Text style={styles.summaryValue}>${orderSummary.tax.toFixed(2)}</Text>
-              </View>
+              {taxEnabled && (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Tax (10%)</Text>
+                  <Text style={styles.summaryValue}>${orderSummary.tax.toFixed(2)}</Text>
+                </View>
+              )}
               
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Total</Text>
@@ -527,7 +613,7 @@ const handlePlaceOrder = async () => {
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -640,12 +726,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   itemPrice: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
     color: '#E74C3C',
   },
   customPrice: {
-    color: '#3498DB',
+    color: '#E74C3C',
   },
   editIcon: {
     marginLeft: 6,
@@ -654,7 +740,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#3498DB',
+    borderBottomColor: '#E74C3C',
   },
   dollarSign: {
     fontSize: 16,
@@ -664,7 +750,7 @@ const styles = StyleSheet.create({
   priceInput: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#3498DB',
+    color: '#E74C3C',
     minWidth: 60,
     paddingVertical: 2,
   },
@@ -672,6 +758,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 8,
   },
   quantityControls: {
     flexDirection: 'row',
@@ -685,12 +772,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  quantityTextButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
   quantityText: {
-    fontSize: 16,
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
+  quantityEditIcon: {
+    marginLeft: 6,
+  },
+  quantityEditContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  quantityInput: {
+    fontSize: 18,
     fontWeight: '600',
     color: '#1A1A1A',
     minWidth: 40,
     textAlign: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: '#3498DB',
+    paddingVertical: 2,
+  },
+  quantityUnit: {
+    fontSize: 18,
+    fontWeight: '400',
+    color: '#666',
+    marginLeft: 4,
+  },
+  checkButton: {
+    marginLeft: 8,
   },
   stockWarning: {
     flexDirection: 'row',
@@ -701,12 +819,42 @@ const styles = StyleSheet.create({
     color: '#E74C3C',
     marginLeft: 4,
   },
+  itemTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+  },
+  itemTotalLabel: {
+    fontSize: 14,
+    color: '#666',
+  },
+  itemTotalValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1A1A1A',
+  },
   summaryContainer: {
     backgroundColor: '#FFF',
     marginHorizontal: 20,
     marginTop: 20,
     padding: 20,
     borderRadius: 12,
+  },
+  taxToggleContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  taxToggleLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#1A1A1A',
   },
   summaryRow: {
     flexDirection: 'row',

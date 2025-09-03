@@ -1,4 +1,4 @@
-// app/(sales)/analytics.tsx - Fixed Analytics Screen
+// app/(sales)/past-proposals.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -10,10 +10,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import SalesAnalytics from '../../src/components/sales/SalesAnalytics';
+import PastProposals from '../../src/components/sales/PastProposals';
 import { supabase } from '../../src/lib/supabase';
 
-export default function AnalyticsScreen() {
+export default function PastProposalsScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -32,7 +32,7 @@ export default function AnalyticsScreen() {
       }
       
       if (user && user.id) {
-        console.log('User ID found:', user.id); // Debug log
+        console.log('User ID found for past proposals:', user.id);
         setUserId(user.id);
       } else {
         console.error('No user found');
@@ -49,7 +49,7 @@ export default function AnalyticsScreen() {
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#E74C3C" />
-          <Text style={styles.loadingText}>Loading analytics...</Text>
+          <Text style={styles.loadingText}>Loading proposals...</Text>
         </View>
       </SafeAreaView>
     );
@@ -59,26 +59,23 @@ export default function AnalyticsScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>Unable to load analytics</Text>
+          <Text style={styles.errorText}>Unable to load proposals</Text>
           <Text style={styles.errorSubtext}>Please try logging in again</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // FIXED: Proper JSX return structure
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#ffffffff" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Sales Analytics</Text>
+        <Text style={styles.headerTitle}>Past Proposals</Text>
         <View style={{ width: 32 }} />
       </View>
-      
-      {/* Import and render the SalesAnalytics component */}
-      <SalesAnalytics salesAgentId={userId} />
+      <PastProposals salesAgentId={userId} />
     </SafeAreaView>
   );
 }
